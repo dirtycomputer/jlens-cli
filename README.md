@@ -1,33 +1,40 @@
 # jlens-cli
 
-将 [Anthropic Jacobian lens（J-lens）](https://github.com/anthropics/jacobian-lens)
-封装成命令行：读取模型内部激活对应的词元、拟合镜头、合并结果、导出交互式 HTML。
+**English** | [简体中文](README.zh-CN.md)
 
-**这是非官方封装，与 Anthropic 无隶属关系。** 数值计算直接使用上游实现，固定在
-`581d398613e5602a5af361e1c34d3a92ea82ba8e`，没有重新实现研究算法。
-此工具针对本地/Hugging Face 开放权重模型，不读取 Claude API 的内部激活。
+A command-line interface for [Anthropic's Jacobian lens (J-lens)](https://github.com/anthropics/jacobian-lens):
+decode internal model activations into tokens, fit lenses, merge results, and export interactive HTML visualizations.
 
-## 安装
+**This is an unofficial wrapper and is not affiliated with Anthropic.** Numerical
+computation uses the upstream implementation, pinned to
+`581d398613e5602a5af361e1c34d3a92ea82ba8e`; the research algorithm is not reimplemented.
+The tool works with local or Hugging Face open-weight models. It does not access
+internal activations through the Claude API.
 
-建议 Python 3.12；最低 Python 3.10。需要 Git 以安装固定版本的上游依赖。
+## Installation
+
+Python 3.12 is recommended; Python 3.10 is the minimum. Git is required to install
+the pinned upstream dependency. Run the following from the repository directory:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-# CPU 环境先安装 CPU 版 PyTorch；GPU 环境按 pytorch.org 选择对应版本。
+# Install CPU PyTorch first on CPU systems; for GPUs, follow pytorch.org.
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -e '.[engine]'
 jlens --help
 ```
 
-`jlens`、`j-lens` 和 `python -m jlens_cli` 等价。仅安装 `pip install -e .`
-即可使用帮助、版本与 `presets`；计算命令需要 `engine` 依赖。
+`jlens`, `j-lens`, and `python -m jlens_cli` are equivalent. Installing only
+`pip install -e .` enables help, version information, and `presets`; computation
+commands require the `engine` extra.
 
-## 快速开始
+## Quick start
 
-以下预设来自上游 notebook；首次运行会下载模型与镜头，需要足够内存/显存。
-4B/27B 模型不是小型示例，CPU 可以运行但会很慢。预设路径不代表已在当前环境
-下载或验证这些大型模型。
+These presets come from the upstream notebook. The first run downloads the model
+and lens and requires sufficient RAM or VRAM. The 4B/27B models are substantial;
+CPU execution is possible but slow. Including a preset does not mean that these
+large models have been downloaded or validated in the current environment.
 
 ```bash
 jlens presets
@@ -41,12 +48,13 @@ jlens render --preset qwen3.5-4b \
   --layer-stride 2 --mask-display -o out/slice.html
 ```
 
-`render` 直接使用上游可视化模板，生成时从 jsDelivr 下载并校验 D3，
-输出包含 D3 与数据的单文件 HTML，可离线在浏览器中打开。
-`--local-files-only` 不影响这次 D3 下载。默认最多追踪 100 个高排名词元；长文本可使用
-`--last-n-tokens 64 --max-tracked 50` 控制输出体积。
+`render` uses the upstream visualization template. During generation, it downloads
+and verifies D3 from jsDelivr, then embeds D3 and the data in a single HTML file
+that can be opened offline in a browser. `--local-files-only` does not affect this
+D3 download. By default, up to 100 highly ranked tokens are tracked. For long
+prompts, use `--last-n-tokens 64 --max-tracked 50` to limit output size.
 
-## 自定义模型与镜头
+## Custom models and lenses
 
 ```bash
 jlens apply \
@@ -61,35 +69,44 @@ cat prompt.txt | jlens apply \
   --prompt-file - --all-positions
 ```
 
-镜头也可以从 Hub 下载：`--lens org/repo --lens-file folder/lens.pt
---lens-revision COMMIT`。模型可通过 `--model-revision COMMIT` 固定版本。
-`--local-files-only` 让 apply/render/fit 仅使用本地或缓存资源。
+Lenses can also be downloaded from the Hub using
+`--lens org/repo --lens-file folder/lens.pt --lens-revision COMMIT`.
+Pin the model version with `--model-revision COMMIT`.
+For `apply`, `render`, and `fit`, `--local-files-only` restricts model, tokenizer,
+and lens loading to local files or cached resources.
 
-输入按原始文本编码，不自动添加聊天模板。位置指的是截断后的词元序列，
-包括 tokenizer 添加的 BOS 等特殊词元；
-默认只分析最后一个词元，`--positions=-2,-1` 的等号可避免参数歧义。
-层索引为零起点。`apply --layers` 使用非负索引，`fit --layers` 也允许负索引。
-默认使用镜头中全部拟合层；模型最终输出单独列出。
+Prompts are encoded as raw text; chat templates are not added automatically.
+Positions index the truncated token sequence, including special tokens such as
+BOS added by the tokenizer. Only the final token is analyzed by default. Use the
+equals sign in `--positions=-2,-1` to avoid argument parsing ambiguity.
+Layer indices are zero-based. `apply --layers` accepts nonnegative indices;
+`fit --layers` also accepts negative indices. All fitted layers in the lens are
+used by default, and the model's final output is reported separately.
 
-JSON 输出到 stdout，日志输出到 stderr；`--format text` 可读性更强。
-`--logit-lens` 切换为未经过 Jacobian 变换的基线，仍需提供镜头以确定默认层。
-返回的概率是在完整词表上计算的 softmax；展示的 top-k 概率之和不必为 1。
+JSON goes to stdout and logs go to stderr. Use `--format text` for readable output.
+`--logit-lens` selects the baseline without Jacobian transport; a lens is still
+required to determine the default layers. Probabilities are computed by softmax
+over the full vocabulary, so the displayed top-k probabilities need not sum to 1.
 
-输出格式 `schema_version: 1`：
+Output schema (`schema_version: 1`):
 
 ```text
 model, lens, method
-input_token_ids                    截断后的完整输入
-positions, input_tokens            所选位置与对应文本
-layers["层索引"][位置偏移][排名]     token_id, token, probability
-model_output[位置偏移][排名]         模型最终层的预测
+input_token_ids                         Full truncated input
+positions, input_tokens                 Selected positions and their text
+layers["layer_index"][position][rank]    token_id, token, probability
+model_output[position][rank]             Final-layer predictions
 ```
 
-## 拟合、续算与合并
+Here, `position` in the nested arrays is the offset within the selected positions,
+not the absolute token index.
 
-语料可以是 UTF-8 `.txt`（每个非空行一个 prompt），也可以是 `.jsonl`
-（每行 `{"text": "..."}`）。上游默认跳过前 16 个词元与最后一个位置，
-因此每条 prompt 至少需要 18 个词元。过短的 prompt 会被跳过；全部过短会报错。
+## Fitting, resuming, and merging
+
+Corpora can be UTF-8 `.txt` files (one prompt per nonempty line) or `.jsonl` files
+(one `{"text": "..."}` object per line). By default, upstream fitting excludes
+the first 16 tokens and the final position, so each prompt needs at least 18 tokens.
+Short prompts are skipped; fitting fails if every prompt is too short.
 
 ```bash
 jlens fit --model /path/to/hf-model \
@@ -97,7 +114,7 @@ jlens fit --model /path/to/hf-model \
   --dim-batch 8 --max-seq-len 128 \
   --checkpoint out/fit.ckpt.pt -o out/lens.pt
 
-# 使用同一条命令并添加 --resume；输出若已存在，另加 --force。
+# Repeat the same command with --resume; add --force if the output already exists.
 jlens fit --model /path/to/hf-model \
   --prompts corpus.jsonl --limit 100 \
   --dim-batch 8 --max-seq-len 128 \
@@ -107,28 +124,33 @@ jlens inspect --lens out/lens.pt
 jlens merge out/shard-a.pt out/shard-b.pt -o out/merged.pt
 ```
 
-Checkpoint 与最终镜头格式不同，不能混用。CLI 额外写入 `.cli.json` 元数据，
-续算时验证语料哈希、模型标识和关键参数；请保留此文件。要复现实验，
-使用固定的模型 revision，不要在续算期间修改本地模型目录。
-不同分片必须使用同一模型、层配置与互不重叠的语料；合并按成功 prompt 数加权。
-镜头文件本身不记录模型身份，维度检查无法识别同尺寸但不同模型的误配。
-CLI 最终镜头以 float32 保存，避免合并时额外降低精度。
+Checkpoints and final lenses have different formats and are not interchangeable.
+The CLI writes an additional `.cli.json` metadata file to validate the corpus
+hash, model identifier, and key settings when resuming; keep this file alongside
+the checkpoint. For reproducible experiments, pin the model revision and do not
+modify the local model directory between runs.
 
-默认不会覆盖已有输出，需显式使用 `--force`。新拟合也不会覆盖已有 checkpoint；
-请选择新路径或使用 `--resume`。`--force` 仅控制最终输出。
+Shards must use the same model and layer configuration with disjoint corpora.
+Merging weights each lens by its number of successfully processed prompts.
+Lens files do not record model identity, so dimension checks cannot detect a
+mismatched model with the same dimensions. The CLI saves final lenses in float32
+to avoid additional precision loss during merging.
 
-## 运行边界
+Existing outputs are protected unless `--force` is specified. A new fitting run
+also refuses to overwrite an existing checkpoint; choose a new path or use
+`--resume`. `--force` applies only to the final output.
 
-- `--device auto` 选择 CUDA、MPS 或 CPU；不进行多 GPU 分片。大型模型需能装入单个设备。
-- `--dtype auto` 在支持 BF16 的 CUDA 上使用 BF16，其余情况使用 float32。
-- 使用 eager attention，以兼容 Jacobian 拟合所需的反向传播。
-- Hugging Face 自定义代码默认关闭，需显式传 `--trust-remote-code`。
-- 模型架构兼容性遵循上游 `jlens.from_hf`；并非所有 HF 模型都支持。
-- 退出码：成功 0，运行错误 1，参数错误 2，中断 130；`jlens --debug ...` 显示堆栈。
-- 上游标注为参考实现、不维护。PyTorch/Transformers 由上游声明约束，
-  未来版本变更可能需要重新验证。
+## Runtime behavior and limitations
 
-## 开发与验证
+- `--device auto` selects CUDA, MPS, or CPU. Models must fit on one device; multi-GPU sharding is not implemented.
+- `--dtype auto` uses BF16 on CUDA devices that support it, and float32 otherwise.
+- Eager attention is used to support the backward passes required for Jacobian fitting.
+- Custom Hugging Face repository code is disabled by default; enable it explicitly with `--trust-remote-code`.
+- Model architecture compatibility follows upstream `jlens.from_hf`; not every Hugging Face model is supported.
+- Exit codes: success 0, runtime error 1, argument error 2, interruption 130. Use `jlens --debug ...` for tracebacks.
+- Upstream describes the project as an unmaintained reference implementation. PyTorch and Transformers constraints come from upstream; future dependency changes may require validation.
+
+## Development and validation
 
 ```bash
 pip install -e '.[engine,dev]'
@@ -138,14 +160,16 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 pytest -q
 python -m build
 ```
 
-测试在本地生成一个随机权重的微型 Llama 与 tokenizer，实际执行拟合、
-checkpoint 续算、top-k 分析、按权重合并和 HTML 渲染，不下载模型；
-渲染测试需要联网取得 D3。
-此测试验证 CLI 与上游接口的连通性，不验证大型预训练模型的可解释性效果。
-GitHub Actions 在 Python 3.10 与 3.12 上运行相同流程。
+Tests create a tiny Llama with random weights and a tokenizer locally, then run
+actual fitting, checkpoint resumption, top-k analysis, weighted merging, and HTML
+rendering. No models are downloaded; the rendering test requires network access
+to fetch D3. These tests validate the CLI's integration with upstream, not the
+interpretability quality of large pretrained models. GitHub Actions runs the
+same checks on Python 3.10 and 3.12.
 
-## 许可证与来源
+## License and sources
 
-Apache-2.0，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
-研究论文：[Verbalizable Representations Form a Global Workspace in Language Models](https://transformer-circuits.pub/2026/workspace/index.html)。
-仓库不附带模型权重、镜头文件或训练语料；运行时下载资源受其各自许可证约束。
+Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Paper: [Verbalizable Representations Form a Global Workspace in Language Models](https://transformer-circuits.pub/2026/workspace/index.html).
+The repository does not bundle model weights, lens files, or training corpora.
+Resources downloaded at runtime are subject to their own licenses.
