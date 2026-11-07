@@ -177,7 +177,7 @@ def plot(root, manifest, summary, statuses):
     fig.subplots_adjust(left=0.105, right=0.96, top=0.89, bottom=0.09, wspace=0.30, hspace=0.32)
     fig.set_facecolor("#f5f7fb")
     panels = [
-        ("resident_cli_fit", "elapsed_median_s", "J-lens fit time", "Seconds · median of 2", True),
+        ("resident_cli_fit", "elapsed_median_s", "J-lens fit time", "Seconds · median of 2", False),
         (None, "vram_peak_gib", "Peak GPU memory", "GiB · max across measured stages", False),
         (
             "resident_cli_fit",
@@ -191,7 +191,7 @@ def plot(root, manifest, summary, statuses):
             "seconds_per_call",
             "J-lens apply latency",
             "Seconds per call · repeated 128-token analysis",
-            True,
+            False,
         ),
     ]
     colors = {"H100": "#2463b5", "B200": "#e17c24"}
@@ -236,7 +236,10 @@ def plot(root, manifest, summary, statuses):
         ax.grid(axis="x", alpha=0.15)
         ax.set_axisbelow(True)
         ax.spines[["top", "right", "left"]].set_visible(False)
-    axes[0, 0].legend(loc="lower right", frameon=False)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.035), ncol=2, frameon=False
+    )
     count = sum(s["status"] == "passed" for s in statuses)
     fig.suptitle(
         "Qwen on H100 vs B200 | measured J-lens workload",
