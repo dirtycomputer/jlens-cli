@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "j-lens-cli"
+version = "0.1.0"
+description = "An agent-friendly CLI for Anthropic's Jacobian Lens"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{name = "Xinyuan Wang"}]
+dependencies = [
+  "jlens @ git+https://github.com/anthropics/jacobian-lens.git@581d398613e5602a5af361e1c34d3a92ea82ba8e",
+  "torch>=2.6",
+  "transformers>=5.5,<6",
+]
+
+[project.optional-dependencies]
+sharded = ["accelerate>=1.0"]
+dev = ["pytest>=8", "ruff>=0.11", "build>=1.2"]
+
+[project.scripts]
+j-lens = "jlens_cli.cli:main"
+jlens = "jlens_cli.cli:main"
+
+[project.urls]
+Repository = "https://github.com/dirtycomputer/j-lens-cli"
+Upstream = "https://github.com/anthropics/jacobian-lens"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: real CPU Transformer and upstream jlens execution"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]

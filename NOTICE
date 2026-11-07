@@ -1,0 +1,15 @@
+J-Lens CLI
+Copyright 2026 Xinyuan Wang
+
+This is an independent command-line wrapper for Jacobian Lens.
+It is not affiliated with or endorsed by Anthropic.
+
+The runtime depends on the upstream jlens reference implementation:
+https://github.com/anthropics/jacobian-lens
+Pinned commit: 581d398613e5602a5af361e1c34d3a92ea82ba8e
+Upstream copyright: 2026 Anthropic PBC
+Upstream license: Apache License, Version 2.0
+
+The upstream numerical implementation is installed as a dependency, not vendored.
+The HTML report and CLI code are implemented by this project.
+Model weights and external datasets are not included.
