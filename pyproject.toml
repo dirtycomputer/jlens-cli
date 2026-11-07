@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jlens-cli"
+version = "0.1.0"
+description = "An unofficial command-line interface for Anthropic's Jacobian lens"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = []
+
+[project.optional-dependencies]
+engine = [
+  "jlens @ git+https://github.com/anthropics/jacobian-lens.git@581d398613e5602a5af361e1c34d3a92ea82ba8e",
+]
+dev = ["pytest>=8", "ruff>=0.9", "build>=1"]
+
+[project.scripts]
+jlens = "jlens_cli.cli:main"
+j-lens = "jlens_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
