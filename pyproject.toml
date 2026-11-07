@@ -20,6 +20,8 @@ dev = ["pytest>=8", "ruff>=0.9", "build>=1"]
 [project.scripts]
 jlens = "jlens_cli.cli:main"
 j-lens = "jlens_cli.cli:main"
+jpplens = "jlens_cli.jpp:main"
+"j-lens++" = "jlens_cli.jpp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

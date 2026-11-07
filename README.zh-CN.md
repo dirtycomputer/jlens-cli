@@ -9,6 +9,10 @@
 `581d398613e5602a5af361e1c34d3a92ea82ba8e`，没有重新实现研究算法。
 此工具针对本地/Hugging Face 开放权重模型，不读取 Claude API 的内部激活。
 
+包内同时提供 `jpplens` / `j-lens++`，用于兼容读取公开的
+[J++ lens checkpoint](https://huggingface.co/koayon/jpp-lenses) 并进行推理。
+详见 [J++ 使用方法和 GPU 测试说明](scripts/README.jpp.md)。
+
 ## 安装
 
 建议 Python 3.12；最低 Python 3.10。需要 Git 以安装固定版本的上游依赖。

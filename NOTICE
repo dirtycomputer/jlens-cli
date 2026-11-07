@@ -9,3 +9,12 @@ Upstream license: Apache License, Version 2.0
 The upstream numerical implementation and visualization assets are installed
 as a dependency, not copied into this repository. Model/lens presets are
 adapted from the upstream walkthrough notebook.
+
+The jpplens / j-lens++ commands are an independent compatible reader for the
+published merged checkpoints at https://huggingface.co/koayon/jpp-lenses
+(Apache-2.0). No checkpoint weights or J++ training code are bundled.
+J++ attribution: Kola Ayonrinde and Jack Lindsey, "J++ Lens: Jacobian Filtering
+Enables More Faithful Workspace Lenses", 2026.
+The reader applies the documented final-norm/LM-head readout using the pinned
+Anthropic Jacobian lens inference engine. It is not the official workspace_lens
+package, and does not implement J++ clustering, LRP fitting or expert weighting.

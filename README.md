@@ -11,6 +11,10 @@ computation uses the upstream implementation, pinned to
 The tool works with local or Hugging Face open-weight models. It does not access
 internal activations through the Claude API.
 
+The package also includes `jpplens` / `j-lens++`, a compatible inference CLI for
+the published [J++ lens checkpoints](https://huggingface.co/koayon/jpp-lenses).
+See [J++ usage and GPU benchmarking](scripts/README.jpp.md).
+
 ## Installation
 
 Python 3.12 is recommended; Python 3.10 is the minimum. Git is required to install
