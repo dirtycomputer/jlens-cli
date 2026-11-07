@@ -149,6 +149,24 @@ checkpoint 续算、top-k 分析、按权重合并和 HTML 渲染，不下载模
 此测试验证 CLI 与上游接口的连通性，不验证大型预训练模型的可解释性效果。
 GitHub Actions 在 Python 3.10 与 3.12 上运行相同流程。
 
+### GPU 冒烟测试
+
+在已安装 CUDA 版 PyTorch 且有两张可见 GPU 的机器上运行：
+
+```bash
+python scripts/gpu_smoke.py --devices 0,1 --dtype bfloat16 --output out/gpu-smoke
+```
+
+脚本在每张 GPU 上拟合独立语料分片，验证断点续算、镜头分析和 HTML 渲染，
+然后合并镜头。`report.json` 记录设备名称、CUDA 分配内存峰值、命令耗时和结果。
+CUDA 不可用时会直接报错，不会退回 CPU；输出目录必须是新目录。
+两张 GPU 依次处理独立分片，不涉及模型分片或分布式训练。
+
+2026-11-07 已在两张 NVIDIA H100 80GB HBM3 上完成 BF16 实测：
+Python 3.11.2、PyTorch 2.12.0（CUDA 12.9）、Transformers 5.22.1，
+共 10 次 CLI 调用全部通过，两张卡均记录到实际 CUDA 显存分配。
+此测试使用随机权重的微型模型验证功能，不是预训练模型性能或可解释性效果评估。
+
 ## 许可证与来源
 
 Apache-2.0，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

@@ -167,6 +167,26 @@ to fetch D3. These tests validate the CLI's integration with upstream, not the
 interpretability quality of large pretrained models. GitHub Actions runs the
 same checks on Python 3.10 and 3.12.
 
+### GPU smoke test
+
+On a machine with CUDA-enabled PyTorch and two visible GPUs, run:
+
+```bash
+python scripts/gpu_smoke.py --devices 0,1 --dtype bfloat16 --output out/gpu-smoke
+```
+
+The script fits a separate corpus shard on each GPU, checks checkpoint resumption,
+applies each lens, renders HTML, and merges the lenses. It records device names,
+peak allocated CUDA memory, command timings, and results in `report.json`.
+It fails if CUDA is unavailable rather than using CPU. The output directory must
+be new. GPUs are exercised sequentially with independent shards; this does not
+implement model sharding or distributed training.
+
+Validated on 2026-11-07 with two NVIDIA H100 80GB HBM3 GPUs, BF16, Python 3.11.2,
+PyTorch 2.12.0 (CUDA 12.9), and Transformers 5.22.1: all 10 CLI invocations passed,
+with CUDA allocations recorded on both GPUs. This checks functionality with a
+tiny random model, not pretrained-model performance or interpretability quality.
+
 ## License and sources
 
 Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
