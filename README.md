@@ -187,6 +187,15 @@ PyTorch 2.12.0 (CUDA 12.9), and Transformers 5.22.1: all 10 CLI invocations pass
 with CUDA allocations recorded on both GPUs. This checks functionality with a
 tiny random model, not pretrained-model performance or interpretability quality.
 
+### Pretrained Qwen resource benchmark
+
+[`scripts/qwen_benchmark.py`](scripts/qwen_benchmark.py) measures revision-pinned
+Qwen models on two independently assigned H100 or B200 GPUs. It records model
+loading, resident fitting and analysis, GPU utilization, VRAM, process RAM, and CPU.
+[`scripts/qwen_report.py`](scripts/qwen_report.py) exports measurements, summaries,
+resource recommendations, and a PNG/SVG comparison. See the bilingual
+[benchmark guide](scripts/README.qwen.md) for configuration and measurement limits.
+
 ## License and sources
 
 Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

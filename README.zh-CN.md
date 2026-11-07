@@ -167,6 +167,15 @@ Python 3.11.2、PyTorch 2.12.0（CUDA 12.9）、Transformers 5.22.1，
 共 10 次 CLI 调用全部通过，两张卡均记录到实际 CUDA 显存分配。
 此测试使用随机权重的微型模型验证功能，不是预训练模型性能或可解释性效果评估。
 
+### 真实 Qwen 模型资源测试
+
+[`scripts/qwen_benchmark.py`](scripts/qwen_benchmark.py) 使用固定版本的 Qwen
+权重，在两张独立分配的 H100 或 B200 上测试模型加载、常驻模型拟合和分析，
+记录 GPU 利用率、显存、进程内存及 CPU。
+[`scripts/qwen_report.py`](scripts/qwen_report.py) 导出测量明细、汇总、
+资源建议 CSV 和 PNG／SVG 对比图。配置及测量范围见
+[中英文测试说明](scripts/README.qwen.md)。
+
 ## 许可证与来源
 
 Apache-2.0，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
