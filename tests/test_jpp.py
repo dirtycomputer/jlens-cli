@@ -245,6 +245,29 @@ def test_unified_artifacts_and_legacy(checkpoint, tiny_model, tmp_path, capsys):
     assert jpp.main(["--legacy", "inspect", "--lens", str(checkpoint)]) == 0
     assert json.loads(capsys.readouterr().out)["d_model"] == 8
     html = tmp_path / "jpp.html"
+    legacy_output = tmp_path / "legacy.json"
+    assert (
+        jpp.main(
+            [
+                "--legacy",
+                "apply",
+                "--model",
+                str(tiny_model),
+                "--lens",
+                str(checkpoint),
+                "--device",
+                "cpu",
+                "--local-files-only",
+                "--prompt",
+                "the cat",
+                "--output",
+                str(legacy_output),
+            ]
+        )
+        == 0
+    )
+    assert "layers" in json.loads(legacy_output.read_text())
+    capsys.readouterr()
     assert (
         jpp.main(
             [

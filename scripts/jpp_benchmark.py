@@ -218,7 +218,7 @@ def child(args):
 
         gc.collect()
         torch.cuda.empty_cache()
-        assert jpp.main([*command, "--paper-layers", "-o", str(output)]) == 0
+        assert jpp.main(["--legacy", *command, "--paper-layers", "-o", str(output)]) == 0
         actual = json.loads(output.read_text())
         expected = json.loads((args.output / "seven_layers_output.json").read_text())
         assert actual["layers"] == expected["layers"]

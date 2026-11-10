@@ -7,6 +7,12 @@
 Install the project with `pip install -e '.[engine]'` after installing a suitable
 PyTorch build. Entry points: `jpplens`, `j-lens++`, `python -m jlens_cli.jpp`.
 
+Version 0.2 uses the shared `schema_version: "1.0"` envelope and adds batch
+`--input`, JSONL output, `--track-token-id`, `schema`, `doctor` and offline
+`visualize`. See [migration](../docs/migration-0.2.md). Prefix commands with
+`--legacy` to retain 0.1 raw JSON and runtime settings. The GPU benchmark below
+uses this legacy path so its measurement procedure remains unchanged.
+
 ```bash
 jpplens presets
 jpplens download --preset qwen3.5-9b --include-model
@@ -38,8 +44,9 @@ The compatible reader loads `parameters.jacobians` with
 `torch.load(weights_only=True, mmap=True)`, validates model identity, width,
 source layers, target offset and finite FP32 matrices, and computes
 `final_norm + LM_head(J_layer @ block_output)`. Selected matrices stay on the
-model's device in FP32. Default model precision on supported CUDA devices is BF16.
-The backend uses eager attention, no KV cache, and one device per model.
+model's device in FP32. The historical benchmark uses BF16, eager attention,
+no KV cache and one device per model. The 0.2 CLI also accepts explicit attention
+and device-map settings; those alternatives were not validated by this benchmark.
 
 By default, tokens with no Unicode letter/digit are removed from lens rankings.
 `--no-readout-filter` disables this. Probabilities always use full-vocabulary
@@ -51,8 +58,9 @@ For a local model copy, use `--model /path/to/model
 --model-identity Qwen/Qwen3.5-9B`. Identity is a user-supplied assertion, not a
 weight hash. For cache relocation, set `HF_HUB_CACHE`; `--cache-dir` controls lens
 lookup and both downloads in the `download` command. `--local-files-only`
-prohibits model/lens network downloads. JSON uses schema version 1; errors go to
-stderr. Existing output files require `--force`.
+prohibits model/lens network downloads. JSON uses the versioned envelope
+(`schema_version: "1.0"`); errors go to stderr. Existing output files require
+`--force`. `--cache-dir` also applies to model/tokenizer loading in 0.2.
 
 This is an independent checkpoint-compatible reader, **not the official
 `workspace_lens` package**. The code repository linked in the model card
@@ -109,6 +117,9 @@ and 10,260 telemetry samples; both two-GPU jobs exited successfully.
 
 安装项目及 `engine` 依赖后，可使用 `jpplens`、`j-lens++` 或
 `python -m jlens_cli.jpp`。上述示例分别展示下载、查看元数据和读出。
+0.2 默认使用 `schema_version: "1.0"` envelope，新增批量 JSONL、token 排名跟踪、
+`schema/doctor` 和离线 `visualize`。旧 JSON 格式通过命令前的 `--legacy` 保留。
+下述 GPU benchmark 使用 legacy 路径，测量流程保持原样。
 9B、27B 预设均固定基础模型和镜头版本；默认分析全部源层，
 `--paper-layers` 使用论文给出的七个深度。
 
@@ -122,7 +133,8 @@ and 10,260 telemetry samples; both two-GPU jobs exited successfully.
 默认从镜头排名中去掉没有 Unicode 字母或数字的词元；
 `--no-readout-filter` 可关闭。概率始终来自完整词表 softmax，
 过滤后不重新归一化，最终模型预测单独列出且不过滤。
-所选矩阵常驻 GPU；模型默认使用支持设备上的 BF16，单卡运行。
+所选矩阵常驻 GPU；历史 benchmark 明确使用 BF16、eager attention 和单卡运行。
+0.2 可另选 attention/device-map 配置，但这些配置不属于该历史 benchmark 的验证范围。
 
 这是公开 checkpoint 的独立兼容实现。模型卡链接的官方源码仓库在
 2026-11-07 检查时返回 404，因此没有封装或声称复现完整 J++ 训练流程：
