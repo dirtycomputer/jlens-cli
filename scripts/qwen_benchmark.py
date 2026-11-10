@@ -35,7 +35,7 @@ def child(args):
     import transformers
     from huggingface_hub import snapshot_download
 
-    import jlens_cli.cli as cli
+    import jlens_cli.legacy as cli
 
     spec = json.loads(args.manifest.read_text())[args.model_index]
     out = args.output

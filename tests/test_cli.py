@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from jlens_cli.cli import main, read_corpus
+from jlens_cli.legacy import main, read_corpus
 
 
 def test_help_is_lightweight():
@@ -12,7 +12,7 @@ def test_help_is_lightweight():
         [
             sys.executable,
             "-c",
-            "import sys; from jlens_cli.cli import main; "
+            "import sys; from jlens_cli.legacy import main; "
             "main(['presets']); assert 'torch' not in sys.modules",
         ],
         capture_output=True,

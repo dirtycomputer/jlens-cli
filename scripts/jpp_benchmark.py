@@ -33,7 +33,8 @@ def child(args):
     import torch
     import transformers
 
-    from jlens_cli import cli, jpp
+    from jlens_cli import jpp
+    from jlens_cli import legacy as cli
 
     torch.set_num_threads(4)
     assert torch.cuda.is_available(), "CPU fallback prohibited"

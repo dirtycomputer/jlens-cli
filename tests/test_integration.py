@@ -11,7 +11,7 @@ torch = pytest.importorskip("torch")
 jlens = pytest.importorskip("jlens")
 transformers = pytest.importorskip("transformers")
 
-from jlens_cli.cli import main  # noqa: E402
+from jlens_cli.legacy import main  # noqa: E402
 
 
 @pytest.fixture(scope="module")

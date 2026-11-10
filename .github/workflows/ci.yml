@@ -22,6 +22,8 @@ jobs:
       - run: ruff format --check .
       - run: pytest -q
         env:
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
       - run: python -m build

@@ -1,6 +1,12 @@
 jlens-cli is an unofficial command-line wrapper for the Jacobian lens.
 It is not affiliated with or endorsed by Anthropic.
 
+Version 0.2 consolidates the agent-friendly wrapper from
+https://github.com/dirtycomputer/j-lens-cli
+at de94a22b519742236aa90e3bfa7162228a0cbc7c.
+Wrapper copyright: Copyright 2026 Xinyuan Wang; Apache-2.0.
+The source repository history is retained in the consolidation merge.
+
 Upstream: https://github.com/anthropics/jacobian-lens
 Pinned commit: 581d398613e5602a5af361e1c34d3a92ea82ba8e
 Upstream copyright: Copyright 2026 Anthropic PBC

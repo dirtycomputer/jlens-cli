@@ -24,7 +24,7 @@ def main():
     from tokenizers.pre_tokenizers import Whitespace
     from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
 
-    from jlens_cli.cli import main as cli
+    from jlens_cli.legacy import main as cli
 
     devices = [int(value) for value in args.devices.split(",")]
     if not devices or len(set(devices)) != len(devices):
