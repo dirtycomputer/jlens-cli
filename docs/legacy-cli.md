@@ -204,7 +204,7 @@ resource recommendations, and a PNG/SVG comparison. See the bilingual
 
 ## License and sources
 
-Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache-2.0; see [LICENSE](../LICENSE) and [NOTICE](../NOTICE).
 Paper: [Verbalizable Representations Form a Global Workspace in Language Models](https://transformer-circuits.pub/2026/workspace/index.html).
 The repository does not bundle model weights, lens files, or training corpora.
 Resources downloaded at runtime are subject to their own licenses.

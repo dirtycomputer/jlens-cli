@@ -184,6 +184,6 @@ Python 3.11.2、PyTorch 2.12.0（CUDA 12.9）、Transformers 5.22.1，
 
 ## 许可证与来源
 
-Apache-2.0，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
+Apache-2.0，见 [LICENSE](../LICENSE) 与 [NOTICE](../NOTICE)。
 研究论文：[Verbalizable Representations Form a Global Workspace in Language Models](https://transformer-circuits.pub/2026/workspace/index.html)。
 仓库不附带模型权重、镜头文件或训练语料；运行时下载资源受其各自许可证约束。
