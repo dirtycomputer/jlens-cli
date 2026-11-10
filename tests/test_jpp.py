@@ -5,7 +5,8 @@ import json
 import pytest
 from test_integration import tiny_model  # noqa: F401
 
-from jlens_cli import cli, jpp
+from jlens_cli import jpp
+from jlens_cli import legacy as cli
 
 torch = pytest.importorskip("torch")
 
@@ -69,10 +70,10 @@ def test_numerical_readout(checkpoint, tiny_model, capsys):  # noqa: F811
         assert item["probability"] == pytest.approx(probabilities[item["token_id"]].item())
         assert any(c.isalnum() for c in item["token"])
     assert len(result["layers"]["0"][0]) == 9  # punctuation excluded
-    assert jpp.main(["inspect", "--lens", str(checkpoint)]) == 0
+    assert jpp.legacy_main(["inspect", "--lens", str(checkpoint)]) == 0
     assert json.loads(capsys.readouterr().out)["d_model"] == 8
     assert (
-        jpp.main(
+        jpp.legacy_main(
             [
                 "apply",
                 "--model",
@@ -123,6 +124,170 @@ def test_filter_probabilities_and_identity(checkpoint, tiny_model):  # noqa: F81
     with pytest.raises(ValueError, match="identity"):
         jpp.validate_model(lens, config, None, "wrong/model")
     assert (
-        jpp.main(["inspect", "--lens", str(checkpoint), "--output", str(checkpoint), "--force"])
+        jpp.legacy_main(
+            ["inspect", "--lens", str(checkpoint), "--output", str(checkpoint), "--force"]
+        )
         == 1
     )
+
+
+def test_unified_batch_readout(checkpoint, tiny_model, tmp_path, monkeypatch, capsys):  # noqa: F811
+    from jlens_cli import operations
+
+    corpus = tmp_path / "batch.jsonl"
+    corpus.write_text('{"id":"a","text":"the cat sat ."}\n{"id":"b","text":"the cat"}\n')
+    original_load = operations.load_model
+    loads = []
+
+    def load(args):
+        model = original_load(args)
+        loads.append(model)
+        return model
+
+    monkeypatch.setattr(operations, "load_model", load)
+    base = [
+        "--model",
+        str(tiny_model),
+        "--lens",
+        str(checkpoint),
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--local-files-only",
+    ]
+    assert (
+        jpp.main(
+            [
+                "apply",
+                *base,
+                "--input",
+                str(corpus),
+                "--output-format",
+                "jsonl",
+                "--track-token-id",
+                "3",
+                "--track-token-id",
+                "9",
+                "--top-k",
+                "1",
+                "--baseline",
+            ]
+        )
+        == 0
+    )
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(loads) == 1
+    assert [r["data"]["result"]["id"] for r in records] == ["a", "b"]
+    lens, config = jpp.load_checkpoint(checkpoint)
+    for record in records:
+        data = record["data"]
+        assert data["backend"] == "jpp" and data["readout_filter"]
+        assert data["probability_basis"] == "full-vocabulary"
+        sample = data["result"]
+        assert [r["kind"] for r in sample["readouts"]] == ["jpp", "logit", "model"]
+        ids = [t["token_id"] for t in sample["tokens"]]
+        logits, _, _ = lens.apply(loads[0], sample["prompt"], positions=sample["positions"])
+        scores = logits[0][0]
+        cell = sample["readouts"][0]["positions"][0]
+        mask = jpp.readout_mask(loads[0].tokenizer, len(scores))
+        for tracked in cell["tracked_tokens"]:
+            token_id = tracked["token_id"]
+            assert tracked["rank"] == int((scores > scores[token_id]).sum()) + 1
+            assert tracked["probability"] == pytest.approx(scores.softmax(-1)[token_id].item())
+            assert tracked["logit"] == pytest.approx(scores[token_id].item())
+            if token_id == 9:  # Punctuation is excluded from J++ ranking, but remains trackable.
+                assert tracked["filtered_rank"] is None
+            else:
+                assert (
+                    tracked["filtered_rank"] == int(((scores > scores[token_id]) & mask).sum()) + 1
+                )
+        assert cell["input_token_id"] == ids[sample["positions"][0]]
+        args = jpp.parser().parse_args(
+            ["apply", *base, "--prompt", sample["prompt"], "--top-k", "1"]
+        )
+        jpp.resolve(args)
+        legacy = jpp.infer(args, loads[0], lens, config, sample["prompt"])
+        top = cell["top_tokens"][0]
+        assert top["token_id"] == legacy["layers"]["0"][0][0]["token_id"]
+        assert top["probability"] == pytest.approx(legacy["layers"]["0"][0][0]["probability"])
+
+    # A late failure must leave stdout empty and the prior result file untouched.
+    target = tmp_path / "prior.jsonl"
+    target.write_text("keep me")
+    assert (
+        jpp.main(
+            [
+                "apply",
+                *base,
+                "--input",
+                str(corpus),
+                "--positions",
+                "4",
+                "--output",
+                str(target),
+                "--force",
+            ]
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err.splitlines()[-1])["error"]["code"] == "invalid_input"
+    assert target.read_text() == "keep me"
+
+
+def test_unified_artifacts_and_legacy(checkpoint, tiny_model, tmp_path, capsys):  # noqa: F811
+    assert jpp.main(["inspect", "--lens", str(checkpoint)]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["d_model"] == 8
+    assert jpp.main(["download", "--lens", str(checkpoint), "--local-files-only"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["lens_path"] == str(checkpoint)
+    assert jpp.main(["--legacy", "inspect", "--lens", str(checkpoint)]) == 0
+    assert json.loads(capsys.readouterr().out)["d_model"] == 8
+    html = tmp_path / "jpp.html"
+    legacy_output = tmp_path / "legacy.json"
+    assert (
+        jpp.main(
+            [
+                "--legacy",
+                "apply",
+                "--model",
+                str(tiny_model),
+                "--lens",
+                str(checkpoint),
+                "--device",
+                "cpu",
+                "--local-files-only",
+                "--prompt",
+                "the cat",
+                "--output",
+                str(legacy_output),
+            ]
+        )
+        == 0
+    )
+    assert "layers" in json.loads(legacy_output.read_text())
+    capsys.readouterr()
+    assert (
+        jpp.main(
+            [
+                "visualize",
+                "--model",
+                str(tiny_model),
+                "--lens",
+                str(checkpoint),
+                "--device",
+                "cpu",
+                "--local-files-only",
+                "--prompt",
+                "the cat",
+                "--output",
+                str(html),
+            ]
+        )
+        == 0
+    )
+    assert "application/json" in html.read_text() and "<script src=" not in html.read_text()
+    capsys.readouterr()
+    assert jpp.main(["fit"]) == 2
+    assert json.loads(capsys.readouterr().err.splitlines()[-1])["error"]["code"] == "usage_error"

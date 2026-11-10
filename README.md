@@ -1,175 +1,186 @@
 # jlens-cli
 
-**English** | [简体中文](README.zh-CN.md)
+An agent-friendly command-line interface for [Anthropic's Jacobian Lens](https://github.com/anthropics/jacobian-lens).
+Fit a lens, read intermediate layer/token representations, compare with the vanilla logit lens, and export interactive HTML.
 
-A command-line interface for [Anthropic's Jacobian lens (J-lens)](https://github.com/anthropics/jacobian-lens):
-decode internal model activations into tokens, fit lenses, merge results, and export interactive HTML visualizations.
+[中文说明](README.zh-CN.md) · [Agent integration](docs/agent-integration.md) · [Validation](docs/validation.md)
 
-**This is an unofficial wrapper and is not affiliated with Anthropic.** Numerical
-computation uses the upstream implementation, pinned to
-`581d398613e5602a5af361e1c34d3a92ea82ba8e`; the research algorithm is not reimplemented.
-The tool works with local or Hugging Face open-weight models. It does not access
-internal activations through the Claude API.
+**Independent wrapper; not an official Anthropic product.** The numerical estimator and lens application are delegated to the official `jlens` package, pinned to commit `581d398613e5602a5af361e1c34d3a92ea82ba8e`.
 
-The package also includes `jpplens` / `j-lens++`, a compatible inference CLI for
-the published [J++ lens checkpoints](https://huggingface.co/koayon/jpp-lenses).
-See [J++ usage and GPU benchmarking](scripts/README.jpp.md).
-
-## Installation
-
-Python 3.12 is recommended; Python 3.10 is the minimum. Git is required to install
-the pinned upstream dependency. Run the following from the repository directory:
+Version 0.2 consolidates `j-lens-cli` into this repository, retaining both source histories.
+It also includes **J++** via `jpplens` / `j-lens++`, with the same JSON/JSONL protocol, batch input, token-rank tracking and offline reports.
+See [migration and compatibility](docs/migration-0.2.md), [agent integration](docs/agent-integration.md), and [J++ benchmarks](scripts/README.jpp.md).
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-# Install CPU PyTorch first on CPU systems; for GPUs, follow pytorch.org.
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -e '.[engine]'
-jlens --help
+jpplens apply --preset qwen3.5-9b --input requests.jsonl \
+  --output-format jsonl --track-token-id 1234 --paper-layers
 ```
 
-`jlens`, `j-lens`, and `python -m jlens_cli` are equivalent. Installing only
-`pip install -e .` enables help, version information, and `presets`; computation
-commands require the `engine` extra.
+The default JSON format is now the versioned envelope documented below. Existing 0.1 callers can use `jlens --legacy ...` or `jpplens --legacy ...`; `jlens render` retains the upstream visualization.
+
+## Install
+
+Python 3.10+ and Git are required. Install a PyTorch build appropriate for your machine first; see [PyTorch installation](https://pytorch.org/get-started/locally/). Then:
+
+```bash
+git clone https://github.com/dirtycomputer/jlens-cli.git
+cd jlens-cli
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[engine]'
+j-lens doctor
+```
+
+Alternatively, install directly from GitHub:
+
+```bash
+python -m pip install "jlens-cli[engine] @ git+https://github.com/dirtycomputer/jlens-cli.git"
+```
+
+The installed commands `j-lens` and `jlens` are equivalent; `python -m jlens_cli` also works.
+The `engine` extra installs the pinned upstream source and ML runtime; the base package provides lightweight CLI discovery. `--help`, `--version`, and `schema` do not import the ML runtime. This release is distributed through GitHub, not PyPI.
 
 ## Quick start
 
-These presets come from the upstream notebook. The first run downloads the model
-and lens and requires sufficient RAM or VRAM. The 4B/27B models are substantial;
-CPU execution is possible but slow. Including a preset does not mean that these
-large models have been downloaded or validated in the current environment.
+The following uses a small Hugging Face model as an example. The bundled synthetic corpus is for smoke testing, **not a calibrated scientific lens**. Use a representative corpus and matching model weights for research.
 
 ```bash
-jlens presets
+# 1. Fit (GPU recommended; change --device to cpu for a small CPU experiment).
+j-lens fit \
+  --model Qwen/Qwen3-0.6B \
+  --prompts examples/corpus.jsonl \
+  --device cuda --dtype float32 \
+  --layers 0,4,8,12 --dim-batch 8 \
+  --checkpoint out/fit.ckpt.pt \
+  --output out/lens.pt
 
-jlens apply --preset qwen3.5-4b \
+# 2. Inspect the final input token, including a logit-lens comparison.
+j-lens apply \
+  --model Qwen/Qwen3-0.6B --lens out/lens.pt \
   --prompt 'Fact: The currency used in the country shaped like a boot is' \
-  --positions=-2 --top-k 5 --format text
+  --positions=-2,-1 --top-k 10 --baseline \
+  --output out/readout.json
 
-jlens render --preset qwen3.5-4b \
-  --prompt 'Fact: The currency used in the country shaped like a boot is' \
-  --layer-stride 2 --mask-display -o out/slice.html
+# 3. Export a self-contained layer × token report.
+j-lens visualize \
+  --model Qwen/Qwen3-0.6B --lens out/lens.pt \
+  --prompt 'The cat sat on the mat.' \
+  --output out/report.html
 ```
 
-`render` uses the upstream visualization template. During generation, it downloads
-and verifies D3 from jsDelivr, then embeds D3 and the data in a single HTML file
-that can be opened offline in a browser. `--local-files-only` does not affect this
-D3 download. By default, up to 100 highly ranked tokens are tracked. For long
-prompts, use `--last-n-tokens 64 --max-tracked 50` to limit output size.
+Open `out/report.html` locally. Click a cell to inspect its top tokens and probabilities. The report includes its data and JavaScript, requires no server/CDN, and does not send prompts anywhere. It is the wrapper's own compact view, not a copy of the upstream visualization.
 
-## Custom models and lenses
+For multi-line input, use `--prompt-file prompt.txt`, or `--prompt-file -` to read stdin. Prompts are raw text; no chat template is added automatically.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `fit` | Fit on text, JSON, or JSONL; checkpoint, resume, and shard |
+| `apply` | Return top-k tokens, logits, probabilities and optional tracked ranks |
+| `visualize` | Write a self-contained interactive HTML report for one prompt |
+| `inspect` | Read lens dimensions, matrix norms and local metadata without loading a language model |
+| `merge` | Merge local disjoint shards with upstream's prompt-count weighted mean |
+| `doctor` | Report installed dependencies and CUDA/MPS availability |
+| `schema` | Emit the machine-readable CLI contract |
+
+Run `j-lens <command> --help` for all options. Global `--verbose` and `--debug` go **before** the subcommand.
+
+## Pre-fitted lenses
+
+You can skip fitting if a lens for the **same model checkpoint** is available:
 
 ```bash
-jlens apply \
-  --model /path/to/hf-model \
-  --lens /path/to/lens.pt \
-  --prompt-file prompt.txt \
-  --layers 0,4,8 --positions=-3,-1 \
-  --device cuda --dtype bfloat16 -o out/result.json
-
-cat prompt.txt | jlens apply \
-  --model /path/to/hf-model --lens /path/to/lens.pt \
-  --prompt-file - --all-positions
+j-lens apply \
+  --model Qwen/Qwen3.5-4B \
+  --lens neuronpedia/jacobian-lens \
+  --lens-revision qwen-n1000 \
+  --lens-filename qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt \
+  --prompt 'The currency used in the country shaped like a boot is' \
+  --positions=-2 --top-k 10
 ```
 
-Lenses can also be downloaded from the Hub using
-`--lens org/repo --lens-file folder/lens.pt --lens-revision COMMIT`.
-Pin the model version with `--model-revision COMMIT`.
-For `apply`, `render`, and `fit`, `--local-files-only` restricts model, tokenizer,
-and lens loading to local files or cached resources.
+This model/lens mapping is from the pinned upstream walkthrough; the large model download and inference are not part of local validation. Model and lens assets may change independently. Prefer immutable `--revision` and `--lens-revision` values when reproducing a run.
 
-Prompts are encoded as raw text; chat templates are not added automatically.
-Positions index the truncated token sequence, including special tokens such as
-BOS added by the tokenizer. Only the final token is analyzed by default. Use the
-equals sign in `--positions=-2,-1` to avoid argument parsing ambiguity.
-Layer indices are zero-based. `apply --layers` accepts nonnegative indices;
-`fit --layers` also accepts negative indices. All fitted layers in the lens are
-used by default, and the model's final output is reported separately.
+`--lens` accepts a `.pt` file, a directory containing `--lens-filename`, or a Hugging Face repository ID. Model access uses the standard Hugging Face cache/authentication. `--local-files-only` on fit/apply/visualize restricts downloads to cached files; `HF_HUB_OFFLINE=1` also applies to inspect. Custom model code requires the explicit `--trust-remote-code` flag.
 
-JSON goes to stdout and logs go to stderr. Use `--format text` for readable output.
-`--logit-lens` selects the baseline without Jacobian transport; a lens is still
-required to determine the default layers. Probabilities are computed by softmax
-over the full vocabulary, so the displayed top-k probabilities need not sum to 1.
+## Coordinates and interpretation
 
-Output schema (`schema_version: 1`):
+- Layers are zero-based **block outputs**, matching upstream `ActivationRecorder`. Fitting always targets the final block and excludes it from source layers by default.
+- Positions index the actual tokenized sequence, after BOS handling and truncation. Negative positions count from its end. `--positions=-3,-1`, `--positions 0:20:2`, and `--positions all` are supported. Python slice stops are exclusive.
+- `apply` defaults to the last input position; `visualize` defaults to all positions. Neither command generates new text.
+- `jacobian` means transported activation readout; `logit` means the untransported baseline; `model` means the actual final-layer readout.
+- Probabilities use the **full-vocabulary softmax**, not a top-k renormalization. Top-k probabilities need not sum to 1. `--top-k` is capped at vocabulary size.
+- Repeat `--track-token-id 123` to get selected vocabulary tokens' full-vocabulary ranks at every selected layer/position. Ties share a rank; top-k ordering among exact ties is unspecified.
+- These outputs are representation readouts, not causal attributions, parameter gradients, or recommendations for weight updates. An RSI agent should test interventions separately.
+- Upstream automatic layout detection covers several Hugging Face decoder families. This wrapper loads `AutoModelForCausalLM`; not every multimodal or custom architecture is supported.
 
-```text
-model, lens, method
-input_token_ids                         Full truncated input
-positions, input_tokens                 Selected positions and their text
-layers["layer_index"][position][rank]    token_id, token, probability
-model_output[position][rank]             Final-layer predictions
+## Fit, resume and merge
+
+Fit input formats:
+
+```jsonl
+{"id":"example-1","text":"A sufficiently long representative text sequence goes here ..."}
+{"id":"example-2","text":"Another sequence goes here ..."}
 ```
 
-Here, `position` in the nested arrays is the offset within the selected positions,
-not the absolute token index.
+Text files contain one prompt per nonblank line. JSON files contain an array of strings or objects. Use `--text-field prompt` for a different field. For stdin, specify `--input-format jsonl` explicitly; automatic format detection uses the file extension.
 
-## Fitting, resuming, and merging
+The upstream default excludes the first 16 positions and the last position from the fitting estimator. Short sequences may be skipped; the CLI reports the count. If all sequences are too short, it fails without producing a lens. `--max-seq-len` is a truncation limit, not padding. Use `--skip-first 0` only when intentionally changing that estimator (e.g. tiny tests).
 
-Corpora can be UTF-8 `.txt` files (one prompt per nonempty line) or `.jsonl` files
-(one `{"text": "..."}` object per line). By default, upstream fitting excludes
-the first 16 tokens and the final position, so each prompt needs at least 18 tokens.
-Short prompts are skipped; fitting fails if every prompt is too short.
+Re-run the same fit command to resume its checkpoint. If a finished lens already exists, add `--force`. A sidecar fingerprint checks prompt contents, model identifiers/resolved model revision, tokenizer settings and estimator parameters. Missing or mismatched checkpoint metadata is rejected. To restart and replace a checkpoint, use **both** `--no-resume --force`.
 
 ```bash
-jlens fit --model /path/to/hf-model \
-  --prompts corpus.jsonl --limit 100 \
-  --dim-batch 8 --max-seq-len 128 \
-  --checkpoint out/fit.ckpt.pt -o out/lens.pt
+# Run separately, potentially on different machines/devices.
+j-lens fit --model /models/my-model --prompts corpus.jsonl \
+  --num-shards 2 --shard-index 0 --output out/shard-0.pt
+j-lens fit --model /models/my-model --prompts corpus.jsonl \
+  --num-shards 2 --shard-index 1 --output out/shard-1.pt
 
-# Repeat the same command with --resume; add --force if the output already exists.
-jlens fit --model /path/to/hf-model \
-  --prompts corpus.jsonl --limit 100 \
-  --dim-batch 8 --max-seq-len 128 \
-  --checkpoint out/fit.ckpt.pt --resume -o out/lens.pt
-
-jlens inspect --lens out/lens.pt
-jlens merge out/shard-a.pt out/shard-b.pt -o out/merged.pt
+j-lens merge out/shard-0.pt out/shard-1.pt --output out/merged.pt
 ```
 
-Checkpoints and final lenses have different formats and are not interchangeable.
-The CLI writes an additional `.cli.json` metadata file to validate the corpus
-hash, model identifier, and key settings when resuming; keep this file alongside
-the checkpoint. For reproducible experiments, pin the model revision and do not
-modify the local model directory between runs.
+Sharding uses `records[shard_index::num_shards]`, after `--limit`. Keep shards disjoint. Duplicate file paths and identical prompt-subset hashes are rejected; arbitrary partial overlap cannot be detected. Files without wrapper metadata can be merged when shapes agree, but their provenance cannot be verified. Preserve each `.pt.meta.json` beside its lens.
 
-Shards must use the same model and layer configuration with disjoint corpora.
-Merging weights each lens by its number of successfully processed prompts.
-Lens files do not record model identity, so dimension checks cannot detect a
-mismatched model with the same dimensions. The CLI saves final lenses in float32
-to avoid additional precision loss during merging.
+The CLI checks widths/layer bounds and known local metadata. Equal dimensions do **not** prove two models have matching weights. Metadata fingerprints identify inputs/configuration and are not full checksums of model weights. `--allow-model-mismatch` permits an intentional model-ID/revision alias override; it does not make a foreign lens valid.
 
-Existing outputs are protected unless `--force` is specified. A new fitting run
-also refuses to overwrite an existing checkpoint; choose a new path or use
-`--resume`. `--force` applies only to the final output.
+Upstream fitting retains a backward graph: reduce `--dim-batch`, `--max-seq-len` or selected layers to manage memory. The number of backward passes per prompt is approximately `ceil(hidden_size / dim_batch)`. Final lenses use FP16 storage by default; choose `--save-dtype float32` when preserving full estimator precision matters. Checkpoints store running sums and are **not** final lens files.
 
-## Runtime behavior and limitations
+For multi-device loading, install `python -m pip install '.[engine,sharded]'` and pass `--device-map auto`. Single-device eager attention is the conservative default; alternative attention kernels, MPS and sharded fitting require validation on your hardware.
 
-- `--device auto` selects CUDA, MPS, or CPU. Models must fit on one device; multi-GPU sharding is not implemented.
-- `--dtype auto` uses BF16 on CUDA devices that support it, and float32 otherwise.
-- Eager attention is used to support the backward passes required for Jacobian fitting.
-- Custom Hugging Face repository code is disabled by default; enable it explicitly with `--trust-remote-code`.
-- Model architecture compatibility follows upstream `jlens.from_hf`; not every Hugging Face model is supported.
-- Exit codes: success 0, runtime error 1, argument error 2, interruption 130. Use `jlens --debug ...` for tracebacks.
-- Upstream describes the project as an unmaintained reference implementation. PyTorch and Transformers constraints come from upstream; future dependency changes may require validation.
+## Machine-readable output
 
-## Development and validation
+Successful stdout is a JSON envelope:
+
+```json
+{"schema_version":"1.0","status":"ok","command":"apply","data":{"results":[]}}
+```
+
+The empty results above illustrate the envelope only. Actual results include prompt IDs, input token IDs, positions, per-layer readouts and run metadata. With `apply --output-format jsonl`, each line contains one envelope with a single `data.result`. A batch loads the model once but processes prompts sequentially; JSONL output is emitted after the batch succeeds, not streamed token by token.
+
+`apply --output FILE` writes the full result atomically and prints a small output-file summary. Logs go to stderr. On failure, the **last stderr line** is a JSON error with `error.code` and `error.message`; earlier lines may contain library diagnostics. Exit codes: `0` success, `1` runtime/dependency failure, `2` invalid input/usage, `130` interruption. `doctor` succeeds when it produced its report; agents must check `data.runtime_ready`.
+
+## Development
 
 ```bash
-pip install -e '.[engine,dev]'
+python -m pip install -e '.[engine,dev]'
 ruff check .
 ruff format --check .
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 pytest -q
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 pytest -q
 python -m build
 ```
 
-Tests create a tiny Llama with random weights and a tokenizer locally, then run
-actual fitting, checkpoint resumption, top-k analysis, weighted merging, and HTML
-rendering. No models are downloaded; the rendering test requires network access
-to fetch D3. These tests validate the CLI's integration with upstream, not the
-interpretability quality of large pretrained models. GitHub Actions runs the
-same checks on Python 3.10 and 3.12.
+Integration tests create a local, randomly initialized GPT-2 model and tokenizer. They exercise actual upstream fitting/backpropagation, apply, resume, merge, batch I/O and HTML export without model downloads. See [validation details](docs/validation.md).
+
+## Attribution and license
+
+Wrapper: Apache-2.0, copyright 2026 Xinyuan Wang. Upstream Jacobian Lens: copyright 2026 Anthropic PBC, Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Method and reference implementation: [Verbalizable Representations Form a Global Workspace in Language Models](https://transformer-circuits.pub/2026/workspace/index.html). No model weights or research corpora are bundled; downloaded models and data retain their respective licenses.
+
+## GPU benchmarks retained from 0.1
+
+The benchmark scripts deliberately use the legacy API to retain the original measurement procedure. These are historical GPU results, not a new GPU validation of version 0.2.
 
 ### GPU smoke test
 
@@ -199,10 +210,3 @@ loading, resident fitting and analysis, GPU utilization, VRAM, process RAM, and 
 [`scripts/qwen_report.py`](scripts/qwen_report.py) exports measurements, summaries,
 resource recommendations, and a PNG/SVG comparison. See the bilingual
 [benchmark guide](scripts/README.qwen.md) for configuration and measurement limits.
-
-## License and sources
-
-Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-Paper: [Verbalizable Representations Form a Global Workspace in Language Models](https://transformer-circuits.pub/2026/workspace/index.html).
-The repository does not bundle model weights, lens files, or training corpora.
-Resources downloaded at runtime are subject to their own licenses.

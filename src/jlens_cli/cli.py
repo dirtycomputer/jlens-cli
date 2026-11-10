@@ -1,35 +1,26 @@
-"""CLI boundary: lazy imports, validated input, and stable JSON output."""
+"""Public command-line interface. Stdout is reserved for results."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
+import contextlib
 import json
+import logging
 import sys
 from pathlib import Path
 
-from . import __version__
+from jlens_cli import SCHEMA_VERSION, UPSTREAM_COMMIT, __version__
+from jlens_cli.io import CLIError, atomic_text, ensure_output
 
-UPSTREAM_COMMIT = "581d398613e5602a5af361e1c34d3a92ea82ba8e"
-PRESETS = {
-    "qwen3.5-4b": {
-        "model": "Qwen/Qwen3.5-4B",
-        "lens": "neuronpedia/jacobian-lens",
-        "lens_revision": "qwen-n1000",
-        "lens_file": "qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt",
-    },
-    "qwen3.6-27b": {
-        "model": "Qwen/Qwen3.6-27B",
-        "lens": "neuronpedia/jacobian-lens",
-        "lens_revision": "qwen-n1000",
-        "lens_file": "qwen3.6-27b/jlens/Salesforce-wikitext/Qwen3.6-27B_jacobian_lens_n1000.pt",
-    },
-}
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise CLIError(message, code="usage_error")
 
 
 def positive(value):
     number = int(value)
-    if number <= 0:
+    if number < 1:
         raise argparse.ArgumentTypeError("must be a positive integer")
     return number
 
@@ -41,439 +32,426 @@ def nonnegative(value):
     return number
 
 
-def indices(value):
-    try:
-        result = [int(part.strip()) for part in value.split(",")]
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("expected comma-separated integers") from exc
-    if len(set(result)) != len(result):
-        raise argparse.ArgumentTypeError("duplicate indices are not allowed")
-    return result
-
-
-def engine():
-    try:
-        import jlens
-        import torch
-    except ImportError as exc:
-        raise ValueError(
-            "runtime dependencies are missing; install with: pip install '.[engine]' "
-            "(from the repository directory)"
-        ) from exc
-    return jlens, torch
-
-
-def output_arg(parser, required=False):
-    parser.add_argument("-o", "--output", type=Path, required=required)
-    parser.add_argument("--force", action="store_true", help="replace an existing output")
-
-
-def model_args(parser):
-    parser.add_argument("--model", help="Hugging Face model ID or local model directory")
-    parser.add_argument("--model-revision", help="model and tokenizer revision")
-    parser.add_argument("--device", default="auto", help="auto, cpu, cuda, cuda:0, or mps")
+def model_options(parser):
+    parser.add_argument("--model", help="Hugging Face model ID or local directory")
+    parser.add_argument(
+        "--revision", "--model-revision", help="Model revision; prefer an immutable commit"
+    )
+    parser.add_argument("--preset", help="Model/lens preset; see presets")
+    parser.add_argument("--tokenizer", help="Optional separate tokenizer ID/directory")
+    parser.add_argument("--tokenizer-revision")
+    parser.add_argument("--device", default="auto", help="auto, cpu, cuda, cuda:0, mps, ...")
+    parser.add_argument("--device-map", choices=["auto"], help="Requires the [sharded] extra")
     parser.add_argument(
         "--dtype", choices=["auto", "float32", "float16", "bfloat16"], default="auto"
     )
     parser.add_argument(
-        "--trust-remote-code",
-        action="store_true",
-        help="explicitly allow Hugging Face repository Python code",
+        "--attn-implementation", default="eager", choices=["eager", "sdpa", "flash_attention_2"]
+    )
+    parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument(
+        "--trust-remote-code", action="store_true", help="Opt in to executing model repository code"
     )
     parser.add_argument(
-        "--local-files-only",
-        action="store_true",
-        help="load model/tokenizer from local files/cache only",
+        "--no-force-bos", action="store_true", help="Disable upstream's BOS adjustment"
     )
 
 
-def lens_args(parser):
-    parser.add_argument("--preset", choices=PRESETS)
-    parser.add_argument("--lens", help="local .pt, local directory, or Hugging Face repo ID")
-    parser.add_argument("--lens-file", help="filename within lens directory/repository")
-    parser.add_argument("--lens-revision", help="lens repository revision")
+def lens_options(parser):
+    parser.add_argument("--lens", help="Local .pt file, directory or Hugging Face lens repo")
+    parser.add_argument("--lens-filename", "--lens-file")
+    parser.add_argument("--lens-revision")
+    parser.add_argument("--cache-dir", type=Path)
 
 
-def prompt_args(parser):
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--prompt", help="raw model input; chat templates are not added")
-    group.add_argument("--prompt-file", type=Path, help="UTF-8 text file, or - for stdin")
-    parser.add_argument("--max-seq-len", type=positive, default=512)
+def input_options(parser):
+    parser.add_argument("--input-format", choices=["auto", "text", "json", "jsonl"], default="auto")
+    parser.add_argument("--text-field", default="text", help="Text field in JSON/JSONL objects")
 
 
-def parser():
-    root = argparse.ArgumentParser(
-        prog="jlens", description="Unofficial CLI for Anthropic's Jacobian lens."
+def output_options(parser, required=False):
+    parser.add_argument("--output", "-o", required=required, help="Result file; otherwise stdout")
+    parser.add_argument("--force", action="store_true", help="Replace existing output files")
+
+
+def parser_for_cli(backend="jacobian"):
+    parser = Parser(
+        prog="jpplens" if backend == "jpp" else "jlens",
+        description="Unified J-lens / J++ CLI.",
+        epilog="Use --legacy before the command to retain the 0.1 parameters and JSON format.",
     )
-    root.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    root.add_argument("--debug", action="store_true", help="show tracebacks on failure")
-    commands = root.add_subparsers(dest="command", required=True)
-    commands.add_parser("presets", help="list model/lens presets as JSON")
-    apply = commands.add_parser("apply", help="decode internal activations into top tokens")
-    model_args(apply)
-    lens_args(apply)
-    prompt_args(apply)
-    apply.add_argument("--layers", type=indices, help="comma-separated layer indices")
-    apply.add_argument(
-        "--positions",
-        type=indices,
-        default=[-1],
-        help="comma-separated token positions (default: -1); use = for negatives",
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--verbose", action="store_true", help="Debug logs to stderr (before subcommand)"
     )
-    apply.add_argument("--all-positions", action="store_true")
-    apply.add_argument("--top-k", type=positive, default=5)
-    apply.add_argument(
-        "--logit-lens", action="store_true", help="use the untransported logit-lens baseline"
-    )
-    apply.add_argument("--format", choices=["json", "text"], default="json")
-    output_arg(apply)
-    render = commands.add_parser("render", help="create a self-contained interactive HTML slice")
-    model_args(render)
-    lens_args(render)
-    prompt_args(render)
-    render.add_argument("--layer-stride", type=positive, default=2)
-    render.add_argument("--last-n-tokens", type=positive)
-    render.add_argument("--top-k", type=positive, default=10)
-    render.add_argument("--max-tracked", type=positive, default=100)
-    render.add_argument("--mask-display", action="store_true")
-    render.add_argument("--title", default="Jacobian lens")
-    output_arg(render, required=True)
-    fit = commands.add_parser("fit", help="fit a lens using a local text or JSONL corpus")
-    model_args(fit)
-    fit.add_argument(
-        "--prompts",
-        type=Path,
-        required=True,
-        help=".txt: one prompt per nonempty line; .jsonl: objects with text",
-    )
-    fit.add_argument("--limit", type=positive)
-    fit.add_argument("--layers", type=indices)
-    fit.add_argument("--dim-batch", type=positive, default=8)
-    fit.add_argument("--max-seq-len", type=positive, default=128)
-    fit.add_argument("--skip-first", type=nonnegative, default=16)
-    fit.add_argument("--checkpoint", type=Path)
-    fit.add_argument("--checkpoint-every", type=positive, default=1)
-    fit.add_argument("--resume", action="store_true")
-    output_arg(fit, required=True)
-    inspect = commands.add_parser("inspect", help="show lens metadata without loading a model")
-    lens_args(inspect)
-    output_arg(inspect)
-    merge = commands.add_parser("merge", help="merge lenses weighted by prompt count")
-    merge.add_argument("lenses", nargs="+", type=Path)
-    output_arg(merge, required=True)
-    return root
-
-
-def prepare_output(path, force=False):
-    if path is None:
-        return
-    if path.exists() and not force:
-        raise ValueError(f"output already exists: {path}; use --force to replace it")
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def emit(value, args):
-    text = (
-        value
-        if isinstance(value, str)
-        else json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
-    )
-    if args.output:
-        args.output.write_text(text + "\n", encoding="utf-8")
-        print(f"Saved {args.output}", file=sys.stderr)
-    else:
-        print(text)
-
-
-def resolve(args):
-    preset = PRESETS.get(getattr(args, "preset", None), {})
-    for key in ("model", "lens", "lens_file", "lens_revision"):
-        if not getattr(args, key, None):
-            setattr(args, key, preset.get(key))
-    args.lens_file = args.lens_file or "lens.pt"
-
-
-def read_prompt(args):
-    if args.prompt is not None:
-        text = args.prompt
-    elif str(args.prompt_file) == "-":
-        text = sys.stdin.read()
-    else:
-        text = args.prompt_file.read_text(encoding="utf-8")
-    if not text.strip():
-        raise ValueError("prompt must not be empty")
-    return text
-
-
-def read_corpus(path, limit=None):
-    prompts = []
-    with path.open(encoding="utf-8") as stream:
-        for number, line in enumerate(stream, 1):
-            if not line.strip():
-                continue
-            if path.suffix.lower() == ".jsonl":
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"{path}:{number}: invalid JSON") from exc
-                text = obj.get("text") if isinstance(obj, dict) else None
-                if not isinstance(text, str) or not text.strip():
-                    raise ValueError(f"{path}:{number}: expected a nonempty 'text' string")
-            else:
-                text = line.rstrip("\r\n")
-            prompts.append(text)
-            if limit and len(prompts) >= limit:
-                break
-    if not prompts:
-        raise ValueError("corpus contains no prompts")
-    return prompts
-
-
-def load_model(args):
-    if not args.model:
-        raise ValueError("--model or --preset is required")
-    jlens, torch = engine()
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    device = args.device
-    if device == "auto":
-        device = (
-            "cuda"
-            if torch.cuda.is_available()
-            else ("mps" if torch.backends.mps.is_available() else "cpu")
+    parser.add_argument("--debug", action="store_true", help="Raise exceptions for debugging")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("presets", help="List model/lens presets")
+    sub.add_parser("doctor", help="Check installed packages and compute availability")
+    sub.add_parser("schema", help="Print CLI contract for agent/tool integration")
+    if backend != "jpp":
+        fit = sub.add_parser("fit", help="Fit a lens on a text/JSON/JSONL corpus")
+        model_options(fit)
+        input_options(fit)
+        output_options(fit, required=True)
+        fit.add_argument(
+            "--prompts",
+            required=True,
+            help="Corpus path or - for stdin; text means one prompt per line",
         )
-    dtype = args.dtype
-    if dtype == "auto":
-        # float32 is the conservative default for fitting and CPU execution.
-        dtype = (
-            "bfloat16"
-            if device.startswith("cuda") and torch.cuda.is_bf16_supported()
-            else "float32"
+        fit.add_argument(
+            "--layers",
+            help="Zero-based source layers, e.g. 0,4,8 or 0:16:2; default excludes final layer",
         )
-    options = dict(
-        revision=args.model_revision,
-        trust_remote_code=args.trust_remote_code,
-        local_files_only=args.local_files_only,
-    )
-    print(f"Loading {args.model} on {device} ({dtype})", file=sys.stderr)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, **options)
-    hf_model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=getattr(torch, dtype), attn_implementation="eager", **options
-    ).to(device)
-    return jlens.from_hf(hf_model, tokenizer)
-
-
-def load_lens(args):
-    if not args.lens:
-        raise ValueError("--lens or --preset is required")
-    jlens, _ = engine()
-    if getattr(args, "local_files_only", False) and not Path(args.lens).exists():
-        from huggingface_hub import hf_hub_download
-
-        path = hf_hub_download(
-            args.lens, args.lens_file, revision=args.lens_revision, local_files_only=True
+        fit.add_argument("--max-seq-len", type=positive, default=128)
+        fit.add_argument("--skip-first", type=nonnegative, default=16)
+        fit.add_argument("--dim-batch", type=positive, default=8)
+        fit.add_argument(
+            "--checkpoint", help="Resumable upstream checkpoint; distinct from the final lens"
         )
-        return jlens.JacobianLens.load(path)
-    return jlens.JacobianLens.from_pretrained(
-        args.lens, filename=args.lens_file, revision=args.lens_revision
-    )
-
-
-def check_lens(lens, model=None):
-    if not lens.source_layers or lens.n_prompts <= 0 or lens.d_model <= 0:
-        raise ValueError("lens must contain fitted layers and a positive prompt count/width")
-    for layer, matrix in lens.jacobians.items():
-        if layer < 0 or tuple(matrix.shape) != (lens.d_model, lens.d_model):
-            raise ValueError(f"invalid Jacobian shape or layer index: {layer}")
-        if not matrix.isfinite().all():
-            raise ValueError(f"non-finite Jacobian at layer {layer}")
-    if model and (lens.d_model != model.d_model or max(lens.source_layers) >= model.n_layers):
-        raise ValueError("lens dimensions/layers do not match the selected model")
-
-
-def top_tokens(logits, tokenizer, k):
-    probabilities = logits.softmax(dim=-1)
-    values, ids = probabilities.topk(min(k, logits.shape[-1]), dim=-1)
-    return [
-        [
-            {
-                "token_id": token_id,
-                "token": tokenizer.decode([token_id]),
-                "probability": probability,
-            }
-            for token_id, probability in zip(row_ids, row_values, strict=True)
-        ]
-        for row_ids, row_values in zip(ids.tolist(), values.tolist(), strict=True)
-    ]
-
-
-def apply_command(args, model, lens, prompt):
-    ids = model.encode(prompt, max_length=args.max_seq_len)[0].tolist()
-    positions = list(range(len(ids))) if args.all_positions else args.positions
-    if not ids or any(p < -len(ids) or p >= len(ids) for p in positions):
-        raise ValueError(f"positions must be within [{-len(ids)}, {len(ids) - 1}]")
-    positions = [p % len(ids) for p in positions]
-    if len(set(positions)) != len(positions):
-        raise ValueError("positions refer to the same token after resolving negative indices")
-    logits, final, _ = lens.apply(
-        model,
-        prompt,
-        layers=args.layers,
-        positions=positions,
-        max_seq_len=args.max_seq_len,
-        use_jacobian=not args.logit_lens,
-    )
-    result = {
-        "schema_version": 1,
-        "model": args.model,
-        "lens": args.lens,
-        "method": "logit-lens" if args.logit_lens else "jacobian-lens",
-        "input_token_ids": ids,
-        "positions": positions,
-        "input_tokens": [model.tokenizer.decode([ids[p]]) for p in positions],
-        "layers": {
-            str(layer): top_tokens(values, model.tokenizer, args.top_k)
-            for layer, values in sorted(logits.items())
-        },
-        "model_output": top_tokens(final, model.tokenizer, args.top_k),
-    }
-    if args.format == "text":
-        lines = []
-        for offset, position in enumerate(positions):
-            lines.append(f"Position {position}: {result['input_tokens'][offset]!r}")
-            for label, rows in [*result["layers"].items(), ("model", result["model_output"])]:
-                tokens = ", ".join(f"{v['token']!r} ({v['probability']:.4f})" for v in rows[offset])
-                lines.append(f"  {label:>6}: {tokens}")
-        emit("\n".join(lines), args)
-    else:
-        emit(result, args)
-
-
-def fit_command(args):
-    if not args.model:
-        raise ValueError("--model is required")
-    if args.max_seq_len <= args.skip_first + 1:
-        raise ValueError("--max-seq-len must exceed --skip-first + 1")
-    prompts = read_corpus(args.prompts, args.limit)
-    signature = {
-        "model": args.model,
-        "model_revision": args.model_revision,
-        "layers": args.layers,
-        "max_seq_len": args.max_seq_len,
-        "skip_first": args.skip_first,
-        "dtype": args.dtype,
-        "upstream_commit": UPSTREAM_COMMIT,
-        "prompts_sha256": hashlib.sha256(
-            json.dumps(prompts, ensure_ascii=False).encode()
-        ).hexdigest(),
-    }
-    checkpoint = args.checkpoint
-    if args.resume and (checkpoint is None or not checkpoint.is_file()):
-        raise ValueError("--resume requires an existing --checkpoint")
-    if checkpoint:
-        if checkpoint.resolve() == args.output.resolve():
-            raise ValueError("--checkpoint and --output must be different files")
-        metadata = checkpoint.with_name(checkpoint.name + ".cli.json")
-        if args.resume:
-            if not metadata.exists() or json.loads(metadata.read_text()) != signature:
-                raise ValueError("checkpoint metadata does not match model, corpus, or settings")
+        fit.add_argument(
+            "--checkpoint-every", type=nonnegative, default=1, help="0 saves only at end"
+        )
+        fit.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+        fit.add_argument(
+            "--limit", type=positive, help="Use only the first N input records, before sharding"
+        )
+        fit.add_argument("--num-shards", type=positive, default=1)
+        fit.add_argument("--shard-index", type=nonnegative, default=0)
+        fit.add_argument("--save-dtype", choices=["float16", "float32"], default="float16")
+    for command in ("apply", "visualize"):
+        apply = sub.add_parser(
+            command,
+            help="Read layer/token representations"
+            if command == "apply"
+            else "Export an interactive, self-contained HTML report",
+        )
+        model_options(apply)
+        lens_options(apply)
+        input_options(apply)
+        output_options(apply, required=command == "visualize")
+        source = apply.add_mutually_exclusive_group(required=True)
+        source.add_argument("--prompt", help="One raw text prompt (no chat template added)")
+        source.add_argument("--prompt-file", help="Entire UTF-8 file as one prompt; - for stdin")
+        source.add_argument("--input", help="Batch corpus; model loaded once")
+        apply.add_argument(
+            "--layers", help="Zero-based layer indices or Python slices; default: all fitted layers"
+        )
+        apply.add_argument(
+            "--positions",
+            default="all" if command == "visualize" else "-1",
+            help="Zero-based token indices, Python slices or all; negative indices allowed",
+        )
+        apply.add_argument("--all-positions", action="store_true", help="Alias for --positions all")
+        apply.add_argument("--top-k", type=positive, default=10)
+        apply.add_argument("--max-seq-len", type=positive, default=512)
+        apply.add_argument(
+            "--track-token-id",
+            type=nonnegative,
+            action="append",
+            default=[],
+            help="Track a vocabulary token's full-vocabulary rank; repeatable",
+        )
+        apply.add_argument(
+            "--baseline", action="store_true", help="Also compute the vanilla logit lens"
+        )
+        apply.add_argument(
+            "--logit-lens", action="store_true", help="Read only the untransported baseline"
+        )
+        apply.add_argument("--format", choices=["json", "text"], default="json")
+        if backend == "jpp":
+            apply.add_argument("--paper-layers", action="store_true")
+            apply.add_argument("--no-readout-filter", action="store_true")
+            apply.add_argument(
+                "--model-identity", help="Original HF ID of an identified local model copy"
+            )
+        apply.add_argument(
+            "--allow-model-mismatch",
+            action="store_true",
+            help="Explicitly override differing local model ID/revision metadata",
+        )
+        if command == "apply":
+            apply.add_argument("--output-format", choices=["json", "jsonl"], default="json")
         else:
-            prepare_output(checkpoint, False)
-            prepare_output(metadata, False)
-    jlens, torch = engine()
-    jlens.configure_logging()
-    model = load_model(args)
-    if checkpoint and not args.resume:
-        metadata.write_text(json.dumps(signature, indent=2), encoding="utf-8")
-    lens = jlens.fit(
-        model,
-        prompts=prompts,
-        source_layers=args.layers,
-        dim_batch=args.dim_batch,
-        max_seq_len=args.max_seq_len,
-        skip_first=args.skip_first,
-        checkpoint_path=str(checkpoint) if checkpoint else None,
-        checkpoint_every=args.checkpoint_every,
-        resume=args.resume,
+            apply.add_argument("--title", default="Jacobian Lens")
+    inspect = sub.add_parser(
+        "inspect", help="Inspect lens metadata and matrix dimensions without loading a model"
     )
-    check_lens(lens, model)
-    lens.save(str(args.output), dtype=torch.float32)
-    print(f"Saved {args.output} ({lens.n_prompts} prompts)", file=sys.stderr)
+    lens_options(inspect)
+    inspect.add_argument("--preset")
+    inspect.add_argument("--local-files-only", action="store_true")
+    output_options(inspect)
+    if backend != "jpp":
+        merge = sub.add_parser(
+            "merge", help="Combine disjoint fitted shards by prompt-count weighted mean"
+        )
+        merge.add_argument("lenses", nargs="+", help="Local lens .pt files (not fit checkpoints)")
+        output_options(merge, required=True)
+        merge.add_argument("--save-dtype", choices=["float16", "float32"], default="float16")
+    if backend == "jpp":
+        download = sub.add_parser(
+            "download", help="Download J++ checkpoint and optionally its model"
+        )
+        model_options(download)
+        lens_options(download)
+        output_options(download)
+        download.add_argument("--include-model", action="store_true")
+    return parser
 
 
-def run(args):
-    if args.command == "presets":
-        print(json.dumps(PRESETS, ensure_ascii=False, indent=2))
+def schema(backend="jacobian") -> dict:
+    return {
+        "cli_version": __version__,
+        "upstream_commit": UPSTREAM_COMMIT,
+        "backend": backend,
+        "commands": (["download"] if backend == "jpp" else ["fit", "merge"])
+        + ["apply", "visualize", "inspect", "presets", "doctor", "schema"],
+        "success": {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "command": "<command>",
+            "data": "<object>",
+        },
+        "error": {
+            "schema_version": SCHEMA_VERSION,
+            "status": "error",
+            "command": "<command or null>",
+            "error": {"code": "<stable code>", "message": "<description>"},
+        },
+        "streams": {
+            "stdout": "JSON result; JSONL with apply --output-format jsonl",
+            "stderr": "logs and JSON errors",
+        },
+        "exit_codes": {
+            "0": "success",
+            "1": "runtime or missing dependency",
+            "2": "invalid usage/input",
+            "130": "interrupted",
+        },
+        "readout_kinds": ["jpp" if backend == "jpp" else "jacobian", "logit", "model"],
+        "legacy": "Use --legacy before the command for the 0.1 CLI and output schema.",
+        "coordinates": "0-based positions after BOS/truncation; layer output residuals",
+        "probabilities": "softmax over the entire vocabulary, not renormalized top-k",
+        "tracked_rank": "1 + count(logit > tracked logit); ties share a rank",
+        "batch_input": {
+            "format": "JSONL",
+            "record": {"id": "optional string/integer", "text": "raw prompt"},
+        },
+        "jsonl_output": "One envelope per prompt; data.result holds the sample and run metadata",
+        "help": "j-lens <command> --help",
+    }
+
+
+def resolve(args, backend):
+    args.backend = backend
+    if args.command in ("presets", "schema", "doctor", "merge"):
         return
-    prepare_output(args.output, args.force)
+    from . import jpp, legacy
+
+    presets = jpp.PRESETS if backend == "jpp" else legacy.PRESETS
+    name = getattr(args, "preset", None)
+    if name and name not in presets:
+        raise CLIError(f"Unknown preset {name!r}; run presets.")
+    preset = presets.get(name, {})
+    custom_model = (
+        args.model is not None and args.model != preset.get("model")
+        if hasattr(args, "model")
+        else False
+    )
+    for attr, key in (
+        ("model", "model"),
+        ("revision", "model_revision"),
+        ("lens", "lens"),
+        ("lens_filename", "lens_file"),
+        ("lens_revision", "lens_revision"),
+    ):
+        if hasattr(args, attr) and getattr(args, attr) is None:
+            if attr != "revision" or not custom_model:
+                setattr(args, attr, preset.get(key))
+    if hasattr(args, "lens_filename"):
+        args.lens_filename = args.lens_filename or "lens.pt"
+        args.lens_file = args.lens_filename  # Published J++ checkpoint resolver.
+    if getattr(args, "paper_layers", False):
+        if not preset:
+            raise CLIError("--paper-layers requires --preset.")
+        if args.layers is not None:
+            raise CLIError("Use either --layers or --paper-layers.")
+        args.layers = ",".join(map(str, preset["paper_layers"]))
+    if getattr(args, "all_positions", False):
+        args.positions = "all"
+
+
+def validate_args(args):
+    if args.command in ("apply", "visualize"):
+        if args.baseline and args.logit_lens:
+            raise CLIError("Use either --baseline or --logit-lens.")
+        if args.command == "apply" and args.format == "text" and args.output_format == "jsonl":
+            raise CLIError("--format text cannot be combined with --output-format jsonl.")
+    if args.command in ("apply", "visualize", "fit") and not args.model and args.backend != "jpp":
+        raise CLIError("--model or --preset is required.", code="usage_error")
+    if args.command in ("apply", "visualize", "inspect", "download") and not args.lens:
+        raise CLIError("--lens or --preset is required.", code="usage_error")
     if args.command == "fit":
-        fit_command(args)
-        return
-    if args.command == "merge":
-        if args.output.resolve() in {path.resolve() for path in args.lenses}:
-            raise ValueError("merge output must be different from its input files")
-        jlens, torch = engine()
-        lenses = [jlens.JacobianLens.load(str(path)) for path in args.lenses]
-        for lens in lenses:
-            check_lens(lens)
-        merged = jlens.JacobianLens.merge(lenses)
-        check_lens(merged)
-        merged.save(str(args.output), dtype=torch.float32)
-        print(f"Saved {args.output} ({merged.n_prompts} prompts)", file=sys.stderr)
-        return
-    resolve(args)
-    if args.command == "inspect":
-        lens = load_lens(args)
-        check_lens(lens)
-        emit(
-            {
-                "schema_version": 1,
-                "d_model": lens.d_model,
-                "n_prompts": lens.n_prompts,
-                "source_layers": lens.source_layers,
-                "matrix_shapes": {str(k): list(v.shape) for k, v in lens.jacobians.items()},
-            },
-            args,
-        )
-        return
-    prompt = read_prompt(args)
-    if not args.model:
-        raise ValueError("--model or --preset is required")
-    lens = load_lens(args)
-    model = load_model(args)
-    check_lens(lens, model)
-    if args.command == "apply":
-        apply_command(args, model, lens, prompt)
-    else:
-        from jlens.vis import build_page, compute_slice
-
-        data = compute_slice(
-            model,
-            lens,
-            prompt,
-            top_n=min(args.top_k, model._lm_head.out_features),
-            layer_stride=args.layer_stride,
-            last_n_tokens=args.last_n_tokens,
-            max_seq_len=args.max_seq_len,
-            mask_display=args.mask_display,
-            max_tracked=args.max_tracked,
-        )
-        page, _, _ = build_page(
-            data, prompt, title=args.title, description=f"Model: {args.model}", mode="embed"
-        )
-        emit(page, args)
+        if args.shard_index >= args.num_shards:
+            raise CLIError("--shard-index must be smaller than --num-shards.")
+        if args.max_seq_len <= args.skip_first + 1:
+            raise CLIError("--max-seq-len must exceed --skip-first + 1.")
+    if getattr(args, "tokenizer_revision", None) and not args.tokenizer:
+        raise CLIError("--tokenizer-revision requires --tokenizer; otherwise --revision is shared.")
+    if args.command in ("fit", "merge", "visualize") and args.output == "-":
+        raise CLIError("This command requires a file path for --output.")
+    inputs = [getattr(args, name, None) for name in ("prompts", "input", "prompt_file", "lens")]
+    inputs.extend(getattr(args, "lenses", []))
+    outputs = [getattr(args, "output", None), getattr(args, "checkpoint", None)]
+    output_paths = [Path(path).resolve() for path in outputs if path and path != "-"]
+    if args.command in ("fit", "merge"):
+        output_paths += [Path(str(path) + ".meta.json") for path in output_paths]
+    if len(set(output_paths)) != len(output_paths):
+        raise CLIError("Output and checkpoint paths must be distinct, including metadata sidecars.")
+    if set(output_paths) & {Path(path).resolve() for path in inputs if path and path != "-"}:
+        raise CLIError("Output/checkpoint paths must not overwrite input files.")
 
 
-def main(argv=None):
-    args = parser().parse_args(argv)
+def envelope(command: str, data: dict) -> dict:
+    return {"schema_version": SCHEMA_VERSION, "status": "ok", "command": command, "data": data}
+
+
+def dispatch(args) -> dict:
+    if args.command == "schema":
+        return schema(args.backend)
+    if args.command == "presets":
+        from . import jpp, legacy
+
+        return jpp.PRESETS if args.backend == "jpp" else legacy.PRESETS
+    if args.command == "doctor":
+        from jlens_cli.runtime import doctor
+
+        return doctor()
+    from jlens_cli import operations
+
+    if args.backend == "jpp" and args.command in ("inspect", "download"):
+        return operations.jpp_artifact(args)
+    if args.command == "visualize":
+        from jlens_cli.report import render
+
+        data = operations.apply(args)
+        atomic_text(args.output, render(data, title=args.title))
+        return {
+            "output": args.output,
+            "format": "html",
+            "self_contained": True,
+            "model": args.model,
+            "num_tokens": data["results"][0]["num_tokens"],
+        }
+    return getattr(operations, args.command)(args)
+
+
+def main(argv=None, *, backend="jacobian") -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--legacy":
+        from . import jpp, legacy
+
+        return (jpp.legacy_main if backend == "jpp" else legacy.main)(argv[1:])
+    # Keep the upstream visualization and all its historical options available.
+    if backend == "jacobian" and argv and argv[0] == "render":
+        from .legacy import main as legacy_main
+
+        return legacy_main(argv)
+    args = None
     try:
-        run(args)
+        args = parser_for_cli(backend).parse_args(argv)
+        resolve(args, backend)
+        validate_args(args)
+        ensure_output(getattr(args, "output", None), force=getattr(args, "force", False))
+        logging.basicConfig(
+            level=logging.DEBUG if args.verbose else logging.INFO,
+            format="%(levelname)s %(name)s: %(message)s",
+            stream=sys.stderr,
+        )
+        with contextlib.redirect_stdout(sys.stderr):
+            result = dispatch(args)
+        response = envelope(args.command, result)
+        if args.command == "apply" and args.format == "text":
+            text = text_readout(result)
+        elif args.command == "apply" and args.output_format == "jsonl":
+            metadata = {key: value for key, value in result.items() if key != "results"}
+            text = "".join(
+                json.dumps(
+                    envelope("apply", {**metadata, "result": item}),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+                + "\n"
+                for item in result["results"]
+            )
+        else:
+            text = json.dumps(response, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
+        if args.command in ("apply", "inspect", "download") and args.output and args.output != "-":
+            atomic_text(args.output, text)
+            print(
+                json.dumps(
+                    envelope(
+                        args.command,
+                        {
+                            "output": args.output,
+                            "output_format": getattr(args, "output_format", "json"),
+                            **(
+                                {"num_prompts": len(result["results"])}
+                                if "results" in result
+                                else {}
+                            ),
+                        },
+                    )
+                )
+            )
+        else:
+            sys.stdout.write(text)
+        return 0
     except KeyboardInterrupt:
-        print("Interrupted.", file=sys.stderr)
-        return 130
-    except (ValueError, OSError, RuntimeError, KeyError, ImportError) as exc:
-        if args.debug:
+        error = CLIError(
+            "Interrupted; a fit checkpoint can be resumed if one was configured.",
+            code="interrupted",
+            exit_code=130,
+        )
+    except Exception as exc:
+        if args and args.debug:
             raise
-        print(f"jlens: error: {exc}", file=sys.stderr)
-        return 1
-    return 0
+        error = (
+            exc
+            if isinstance(exc, CLIError)
+            else CLIError(
+                str(exc),
+                code="invalid_input"
+                if isinstance(exc, (ValueError, FileNotFoundError))
+                else "runtime_error",
+                exit_code=2 if isinstance(exc, (ValueError, FileNotFoundError)) else 1,
+            )
+        )
+    print(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "error",
+                "command": args.command if args else None,
+                "error": {"code": error.code, "message": str(error)},
+            },
+            ensure_ascii=False,
+        ),
+        file=sys.stderr,
+    )
+    return error.exit_code
+
+
+def text_readout(data):
+    lines = []
+    for sample in data["results"]:
+        lines.append(f"Sample {sample['id']}")
+        for offset, position in enumerate(sample["positions"]):
+            lines.append(f"Position {position}")
+            for readout in sample["readouts"]:
+                tokens = ", ".join(
+                    f"{t['token']!r} ({t['probability']:.4f})"
+                    for t in readout["positions"][offset]["top_tokens"]
+                )
+                lines.append(f"  {readout['kind']} / {readout['layer']}: {tokens}")
+    return "\n".join(lines) + "\n"

@@ -1,157 +1,108 @@
 # jlens-cli
 
-[English](README.md) | **简体中文**
+将 [Anthropic Jacobian Lens](https://github.com/anthropics/jacobian-lens) 封装为可供人和 AI Agent 调用的命令行工具。提供 lens 拟合、内部表征读取、logit lens 对照、分片合并、JSON/JSONL 输出与交互式 HTML 报告。
 
-将 [Anthropic Jacobian lens（J-lens）](https://github.com/anthropics/jacobian-lens)
-封装成命令行：读取模型内部激活对应的词元、拟合镜头、合并结果、导出交互式 HTML。
+这是独立封装，非 Anthropic 官方产品。数值计算直接使用官方 `jlens`，上游固定至 `581d398613e5602a5af361e1c34d3a92ea82ba8e`，不重新实现 Jacobian 算法。
 
-**这是非官方封装，与 Anthropic 无隶属关系。** 数值计算直接使用上游实现，固定在
-`581d398613e5602a5af361e1c34d3a92ea82ba8e`，没有重新实现研究算法。
-此工具针对本地/Hugging Face 开放权重模型，不读取 Claude API 的内部激活。
+0.2 版将 `j-lens-cli` 的能力统一迁入本仓库，并保留两个仓库的 Git 历史。
+`jpplens` / `j-lens++` 保留 J++ checkpoint 读取，同时使用相同的 JSON/JSONL 协议，支持批量输入、指定 token 排名跟踪与离线 HTML。
+详见[迁移兼容说明](docs/migration-0.2.md)、[Agent 接入](docs/agent-integration.md)和 [J++ GPU 测试](scripts/README.jpp.md)。
 
-包内同时提供 `jpplens` / `j-lens++`，用于兼容读取公开的
-[J++ lens checkpoint](https://huggingface.co/koayon/jpp-lenses) 并进行推理。
-详见 [J++ 使用方法和 GPU 测试说明](scripts/README.jpp.md)。
+```bash
+jpplens apply --preset qwen3.5-9b --input requests.jsonl \
+  --output-format jsonl --track-token-id 1234 --paper-layers
+```
+
+默认 JSON 已改为带 `schema_version/status/command/data` 的 envelope。原 0.1 脚本可使用 `jlens --legacy ...` 或 `jpplens --legacy ...`；`jlens render` 仍提供上游可视化。
 
 ## 安装
 
-建议 Python 3.12；最低 Python 3.10。需要 Git 以安装固定版本的上游依赖。
-请在仓库目录中执行以下命令：
+需要 Python 3.10+ 和 Git。计算功能通过 `engine` extra 安装；基础安装可使用帮助、版本、schema 和 presets。建议先按 [PyTorch 官方说明](https://pytorch.org/get-started/locally/) 安装适合本机的 CPU/CUDA 版本。
 
 ```bash
+git clone https://github.com/dirtycomputer/jlens-cli.git
+cd jlens-cli
 python -m venv .venv
 source .venv/bin/activate
-# CPU 环境先安装 CPU 版 PyTorch；GPU 环境按 pytorch.org 选择对应版本。
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -e '.[engine]'
-jlens --help
+python -m pip install -e '.[engine]'
+j-lens doctor
 ```
 
-`jlens`、`j-lens` 和 `python -m jlens_cli` 等价。仅安装 `pip install -e .`
-即可使用帮助、版本与 `presets`；计算命令需要 `engine` 依赖。
+`j-lens`、`jlens`、`python -m jlens_cli` 等价。本版本通过 GitHub 安装，尚未发布至 PyPI。
 
-## 快速开始
-
-以下预设来自上游 notebook；首次运行会下载模型与镜头，需要足够内存/显存。
-4B/27B 模型不是小型示例，CPU 可以运行但会很慢。预设路径不代表已在当前环境
-下载或验证这些大型模型。
+## 最小使用流程
 
 ```bash
-jlens presets
+# 1. 为指定模型拟合 lens
+j-lens fit \
+  --model Qwen/Qwen3-0.6B \
+  --prompts examples/corpus.jsonl \
+  --layers 0,4,8,12 --device cuda --dtype float32 \
+  --checkpoint out/fit.ckpt.pt --output out/lens.pt
 
-jlens apply --preset qwen3.5-4b \
-  --prompt 'Fact: The currency used in the country shaped like a boot is' \
-  --positions=-2 --top-k 5 --format text
+# 2. 查看指定 token 位置的逐层表征，并与 logit lens 对照
+j-lens apply \
+  --model Qwen/Qwen3-0.6B --lens out/lens.pt \
+  --prompt 'The currency used in the country shaped like a boot is' \
+  --positions=-2,-1 --top-k 10 --baseline \
+  --output out/readout.json
 
-jlens render --preset qwen3.5-4b \
-  --prompt 'Fact: The currency used in the country shaped like a boot is' \
-  --layer-stride 2 --mask-display -o out/slice.html
+# 3. 导出层 × token 的可交互报告
+j-lens visualize \
+  --model Qwen/Qwen3-0.6B --lens out/lens.pt \
+  --prompt 'The cat sat on the mat.' \
+  --output out/report.html
 ```
 
-`render` 直接使用上游可视化模板，生成时从 jsDelivr 下载并校验 D3，
-输出包含 D3 与数据的单文件 HTML，可离线在浏览器中打开。
-`--local-files-only` 不影响这次 D3 下载。默认最多追踪 100 个高排名词元；长文本可使用
-`--last-n-tokens 64 --max-tracked 50` 控制输出体积。
+HTML 可直接在浏览器打开，点击单元格查看 top-k；无需服务器或 CDN。示例语料仅用于检查流程，不能替代有代表性的预训练风格校准语料。已有与模型权重匹配的预拟合 lens 时，可以直接执行 `apply`。
 
-## 自定义模型与镜头
+| 命令 | 功能 |
+| --- | --- |
+| `fit` | 拟合、断点续算、输入分片 |
+| `apply` | 单条或批量读取，输出 JSON/JSONL |
+| `visualize` | 导出自包含 HTML |
+| `inspect` | 查看 lens 的层、维度、prompt 数及元数据 |
+| `merge` | 按有效 prompt 数加权合并互不重叠的分片 |
+| `doctor` | 检查依赖和 CUDA/MPS；检查结果中的 `runtime_ready` |
+| `schema` | 输出 Agent 可读取的调用契约 |
+
+## 接入 Agent / RSI
 
 ```bash
-jlens apply \
-  --model /path/to/hf-model \
-  --lens /path/to/lens.pt \
-  --prompt-file prompt.txt \
-  --layers 0,4,8 --positions=-3,-1 \
-  --device cuda --dtype bfloat16 -o out/result.json
+j-lens schema
+j-lens apply --help
 
-cat prompt.txt | jlens apply \
-  --model /path/to/hf-model --lens /path/to/lens.pt \
-  --prompt-file - --all-positions
+j-lens apply \
+  --model /models/my-model --lens out/lens.pt \
+  --input prompts.jsonl --output-format jsonl \
+  --positions=-1 --top-k 10
 ```
 
-镜头也可以从 Hub 下载：`--lens org/repo --lens-file folder/lens.pt
---lens-revision COMMIT`。模型可通过 `--model-revision COMMIT` 固定版本。
-`--local-files-only` 让 apply/render/fit 仅从本地文件或缓存加载模型、tokenizer 与镜头。
+输入 JSONL 每行形如 `{"id":"case-1","text":"你的 prompt"}`。模型在一次批量调用中仅加载一次，逐条处理。成功结果在 stdout，日志及错误在 stderr；失败时 stderr 最后一行是结构化 JSON。返回码 `0/1/2/130` 分别表示成功、运行时错误、输入错误和中断。
 
-输入按原始文本编码，不自动添加聊天模板。位置指的是截断后的词元序列，
-包括 tokenizer 添加的 BOS 等特殊词元；
-默认只分析最后一个词元，`--positions=-2,-1` 的等号可避免参数歧义。
-层索引为零起点。`apply --layers` 使用非负索引，`fit --layers` 也允许负索引。
-默认使用镜头中全部拟合层；模型最终输出单独列出。
+完整的 Python 工具调用样例见 [examples/agent_tool.py](examples/agent_tool.py)，接口约定见 [docs/agent-integration.md](docs/agent-integration.md)。
 
-JSON 输出到 stdout，日志输出到 stderr；`--format text` 可读性更强。
-`--logit-lens` 切换为未经过 Jacobian 变换的基线，仍需提供镜头以确定默认层。
-返回的概率是在完整词表上计算的 softmax；展示的 top-k 概率之和不必为 1。
+## 关键约定
 
-输出格式 `schema_version: 1`：
+- 层索引从 0 开始，表示 Transformer block 的输出残差。拟合默认选择最终层之前的所有层，目标固定为最终层。
+- token 位置以实际编码结果为准，包含 BOS 处理和截断；`-1` 为输入序列最后一个 token，`all` 为所有位置。支持 `0:16:2` 等 Python 切片。
+- 输入是原始文本，不自动套用 chat template；不执行自回归生成。
+- 概率来自全词表 softmax，top-k 概率之和通常小于 1。`--track-token-id ID` 可重复使用，以跟踪指定词表 token 的完整排名。
+- 默认拟合排除前 16 个位置和最后一个位置。过短样本会被跳过；全部过短则失败。
+- `.pt` 是最终 lens；`.ckpt.pt` 是拟合中间状态，二者不能混用。保留 `.meta.json`，以便检查模型身份及恢复配置。
+- 重复相同拟合命令可续算。已有最终输出时增加 `--force`；主动丢弃旧 checkpoint 并重算则使用 `--no-resume --force`。
+- lens 必须与模型权重相匹配。相同隐藏维度并不能证明兼容；模型微调后也需要重新验证或重新拟合。
+- J-Lens 输出是表征的词表读出，不是权重梯度或因果贡献分数。接入 RSI 后仍需设计干预实验和任务评测。
 
-```text
-model, lens, method
-input_token_ids                    截断后的完整输入
-positions, input_tokens            所选位置与对应文本
-layers["层索引"][位置偏移][排名]     token_id, token, probability
-model_output[位置偏移][排名]         模型最终层的预测
-```
+## 验证范围
 
-嵌套数组中的“位置偏移”指所选位置列表中的偏移，不是绝对词元索引。
+测试使用本地随机初始化的小型 GPT-2，实际运行官方 Jacobian 拟合与反向传播，验证读取数值、分片合并、断点恢复、文件保护、批量输出和 HTML 导出。大型 Qwen/Llama、CUDA、MPS 及多卡性能不属于本次本地验证范围。详见 [验证记录](docs/validation.md)。
 
-## 拟合、续算与合并
+完整参数、预拟合 lens 示例及分片方法见 [English README](README.md)。代码使用 Apache-2.0 许可证，保留上游归属；不附带模型权重。
 
-语料可以是 UTF-8 `.txt`（每个非空行一个 prompt），也可以是 `.jsonl`
-（每行 `{"text": "..."}`）。上游默认跳过前 16 个词元与最后一个位置，
-因此每条 prompt 至少需要 18 个词元。过短的 prompt 会被跳过；全部过短会报错。
+## 保留的 GPU 测试工具
 
-```bash
-jlens fit --model /path/to/hf-model \
-  --prompts corpus.jsonl --limit 100 \
-  --dim-batch 8 --max-seq-len 128 \
-  --checkpoint out/fit.ckpt.pt -o out/lens.pt
-
-# 使用同一条命令并添加 --resume；输出若已存在，另加 --force。
-jlens fit --model /path/to/hf-model \
-  --prompts corpus.jsonl --limit 100 \
-  --dim-batch 8 --max-seq-len 128 \
-  --checkpoint out/fit.ckpt.pt --resume -o out/lens.pt
-
-jlens inspect --lens out/lens.pt
-jlens merge out/shard-a.pt out/shard-b.pt -o out/merged.pt
-```
-
-Checkpoint 与最终镜头格式不同，不能混用。CLI 额外写入 `.cli.json` 元数据，
-续算时验证语料哈希、模型标识和关键参数；请保留此文件。要复现实验，
-使用固定的模型 revision，不要在续算期间修改本地模型目录。
-不同分片必须使用同一模型、层配置与互不重叠的语料；合并按成功 prompt 数加权。
-镜头文件本身不记录模型身份，维度检查无法识别同尺寸但不同模型的误配。
-CLI 最终镜头以 float32 保存，避免合并时额外降低精度。
-
-默认不会覆盖已有输出，需显式使用 `--force`。新拟合也不会覆盖已有 checkpoint；
-请选择新路径或使用 `--resume`。`--force` 仅控制最终输出。
-
-## 运行边界
-
-- `--device auto` 选择 CUDA、MPS 或 CPU；不进行多 GPU 分片。大型模型需能装入单个设备。
-- `--dtype auto` 在支持 BF16 的 CUDA 上使用 BF16，其余情况使用 float32。
-- 使用 eager attention，以兼容 Jacobian 拟合所需的反向传播。
-- Hugging Face 自定义代码默认关闭，需显式传 `--trust-remote-code`。
-- 模型架构兼容性遵循上游 `jlens.from_hf`；并非所有 HF 模型都支持。
-- 退出码：成功 0，运行错误 1，参数错误 2，中断 130；`jlens --debug ...` 显示堆栈。
-- 上游标注为参考实现、不维护。PyTorch/Transformers 由上游声明约束，
-  未来版本变更可能需要重新验证。
-
-## 开发与验证
-
-```bash
-pip install -e '.[engine,dev]'
-ruff check .
-ruff format --check .
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 pytest -q
-python -m build
-```
-
-测试在本地生成一个随机权重的微型 Llama 与 tokenizer，实际执行拟合、
-checkpoint 续算、top-k 分析、按权重合并和 HTML 渲染，不下载模型；
-渲染测试需要联网取得 D3。
-此测试验证 CLI 与上游接口的连通性，不验证大型预训练模型的可解释性效果。
-GitHub Actions 在 Python 3.10 与 3.12 上运行相同流程。
+这些脚本使用 legacy API，保留原有测量流程。以下为 0.1 历史 GPU 结果，不代表对 0.2 新接口做过 GPU 验证。
 
 ### GPU 冒烟测试
 
@@ -179,9 +130,3 @@ Python 3.11.2、PyTorch 2.12.0（CUDA 12.9）、Transformers 5.22.1，
 [`scripts/qwen_report.py`](scripts/qwen_report.py) 导出测量明细、汇总、
 资源建议 CSV 和 PNG／SVG 对比图。配置及测量范围见
 [中英文测试说明](scripts/README.qwen.md)。
-
-## 许可证与来源
-
-Apache-2.0，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
-研究论文：[Verbalizable Representations Form a Global Workspace in Language Models](https://transformer-circuits.pub/2026/workspace/index.html)。
-仓库不附带模型权重、镜头文件或训练语料；运行时下载资源受其各自许可证约束。

@@ -7,7 +7,8 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, cli
+from . import __version__
+from . import legacy as cli
 
 LENS_REVISION = "237dab6ea0e611d964bf407f13ba1655f1a6ae43"
 PRESETS = {
@@ -298,7 +299,7 @@ def run(args):
         cli.emit(result, args)
 
 
-def main(argv=None):
+def legacy_main(argv=None):
     args = parser().parse_args(argv)
     try:
         run(args)
@@ -310,6 +311,12 @@ def main(argv=None):
         print(f"jpplens: error: {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+def main(argv=None):
+    from .cli import main as unified_main
+
+    return unified_main(argv, backend="jpp")
 
 
 if __name__ == "__main__":

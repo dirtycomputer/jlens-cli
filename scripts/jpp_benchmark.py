@@ -33,7 +33,8 @@ def child(args):
     import torch
     import transformers
 
-    from jlens_cli import cli, jpp
+    from jlens_cli import jpp
+    from jlens_cli import legacy as cli
 
     torch.set_num_threads(4)
     assert torch.cuda.is_available(), "CPU fallback prohibited"
@@ -217,7 +218,7 @@ def child(args):
 
         gc.collect()
         torch.cuda.empty_cache()
-        assert jpp.main([*command, "--paper-layers", "-o", str(output)]) == 0
+        assert jpp.main(["--legacy", *command, "--paper-layers", "-o", str(output)]) == 0
         actual = json.loads(output.read_text())
         expected = json.loads((args.output / "seven_layers_output.json").read_text())
         assert actual["layers"] == expected["layers"]
