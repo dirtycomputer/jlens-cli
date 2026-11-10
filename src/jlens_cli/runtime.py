@@ -6,6 +6,7 @@ import importlib.metadata
 from pathlib import Path
 
 from jlens_cli import UPSTREAM_COMMIT
+from jlens_cli.artifacts import protect_paths, weights_identity
 from jlens_cli.io import CLIError, read_metadata
 
 
@@ -87,29 +88,40 @@ def validate_lens(lens, model=None):
 
 def load_lens(args, model=None):
     _, jlens = dependencies()
-    if getattr(args, "local_files_only", False) and not Path(args.lens).exists():
+    if not Path(args.lens).exists():
         from huggingface_hub import hf_hub_download
 
         path = hf_hub_download(
             args.lens,
             filename=args.lens_filename,
             revision=args.lens_revision,
-            local_files_only=True,
+            local_files_only=getattr(args, "local_files_only", False),
             cache_dir=getattr(args, "cache_dir", None),
         )
-        lens = jlens.JacobianLens.load(path)
     else:
-        lens = jlens.JacobianLens.from_pretrained(
-            args.lens,
-            filename=args.lens_filename,
-            revision=args.lens_revision,
-        )
+        path = Path(args.lens)
+        if path.is_dir():
+            path = path / args.lens_filename
+    args.resolved_lens_path = str(path)
+    protect_paths(args, [path])
+    lens = jlens.JacobianLens.load(str(path))
     validate_lens(lens, model)
     local_path = Path(args.lens)
     metadata = read_metadata(
         str(local_path / args.lens_filename) if local_path.is_dir() else args.lens
     )
     if model is not None and metadata:
+        if not hasattr(model, "_cli_identity"):
+            model._cli_identity = weights_identity(args, model)
+        if (
+            metadata.get("artifact_identity")
+            and metadata["artifact_identity"] != model._cli_identity
+            and not args.allow_model_mismatch
+        ):
+            raise CLIError(
+                "Model/tokenizer content differs from lens metadata; calibrate or allow mismatch.",
+                code="incompatible_lens",
+            )
         source = metadata.get("model")
         revision = metadata.get("revision")
         if (

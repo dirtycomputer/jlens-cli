@@ -1,0 +1,11 @@
+{
+  "backend": "jpp",
+  "preset": "qwen3.5-9b",
+  "device": "cuda:0",
+  "dtype": "bfloat16",
+  "attn_implementation": "sdpa",
+  "max_tokens": 2048,
+  "max_samples": 32,
+  "max_readout_cells": 256,
+  "max_tracked_tokens": 64
+}

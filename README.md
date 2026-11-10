@@ -1,5 +1,13 @@
 # jlens-cli
 
+**RSI tools (0.3):** use `jlens serve --config SESSION.json` for a resident JSONL
+worker, or `jlens tool --config SESSION.json --request REQUEST.json` for one call.
+Both J-lens and J++ share exact-token readouts, concept trajectories, contrastive
+component scores, canary health checks and bounded LoRA trial proposals.
+See the [RSI protocol, architecture and resource guide](docs/rsi-tools.md).
+The tool proposes observations/experiments; an external trainer and independent
+behavioral gates decide whether an update is accepted.
+
 An agent-friendly command-line interface for [Anthropic's Jacobian Lens](https://github.com/anthropics/jacobian-lens).
 Fit a lens, read intermediate layer/token representations, compare with the vanilla logit lens, and export interactive HTML.
 

@@ -45,3 +45,19 @@ both doctor reports and both legacy preset entry points passed.
 No GPU execution was performed for this consolidation. Existing GPU scripts and
 historical results are retained separately. Hosted CI runs the complete suite
 on Python 3.10 and 3.12 for the final commit.
+
+## RSI tool refactor: 2026-11-10
+
+The complete CPU suite passed 66 tests on Python 3.12.14, PyTorch 2.15.0+cpu
+and Transformers 5.22.2. New tests exercise the resident process, exact token IDs
+and templates, masks/positions/truncation, one forward for transported and
+baseline readouts, numerical agreement with upstream and the J++ reader, manual
+contrastive component projections, unchanged weights and hook cleanup, artifact
+comparability, labeled-canary/reference health, bounded trial proposals, protocol
+errors and the five reviewed boundary conditions.
+
+Ruff lint/format and wheel/sdist builds passed. A fresh wheel environment without
+ML dependencies passed schema discovery for all four aliases and JSONL worker
+capability/error/close requests. No GPU or pretrained-model performance test was
+performed; component scores and selection benefit remain research hypotheses.
+Hosted CI validates the final commit separately on Python 3.10 and 3.12.
