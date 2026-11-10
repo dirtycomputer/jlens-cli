@@ -15,7 +15,7 @@ j-lens apply --model /models/checkpoint --lens /lenses/lens.pt \
   --top-k 10 --track-token-id 1234 --baseline
 ```
 
-The caller writes the raw prompt to stdin. Layers/positions refer to the encoded prompt, not characters or generated tokens. For multiple requests against the same model/lens, use `--input requests.jsonl` so the model is loaded only once. Each standalone invocation otherwise reloads the model. There is no persistent GPU worker or concurrent serving layer in this version.
+The caller writes the raw prompt to stdin. Layers/positions refer to the encoded prompt, not characters or generated tokens. For multiple requests against the same model/lens, use `--input requests.jsonl` so the model is loaded only once. Each standalone invocation otherwise reloads the model. For a resident sequential worker, use `serve` and the versioned protocol in [RSI tools](rsi-tools.md). Ordinary `apply` remains a single batch invocation; concurrent model serving is not implemented.
 
 ## Result structure
 

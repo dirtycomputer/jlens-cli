@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from jlens_cli import SCHEMA_VERSION, UPSTREAM_COMMIT, __version__
+from jlens_cli.artifacts import protect_paths
 from jlens_cli.io import CLIError, atomic_text, ensure_output
 
 
@@ -89,6 +90,21 @@ def parser_for_cli(backend="jacobian"):
     sub.add_parser("presets", help="List model/lens presets")
     sub.add_parser("doctor", help="Check installed packages and compute availability")
     sub.add_parser("schema", help="Print CLI contract for agent/tool integration")
+    for name in ("tool", "serve"):
+        tool = sub.add_parser(
+            name,
+            help="Run one RSI tool request"
+            if name == "tool"
+            else "Serve JSONL tool requests with one resident checkpoint",
+        )
+        tool.add_argument("--config", help="Session JSON; optional for artifact-only analysis")
+        if name == "tool":
+            tool.add_argument(
+                "--request", required=True, help="Tool request JSON file or - for stdin"
+            )
+            output_options(tool)
+        else:
+            tool.add_argument("--max-request-bytes", type=positive, default=16 * 1024 * 1024)
     if backend != "jpp":
         fit = sub.add_parser("fit", help="Fit a lens on a text/JSON/JSONL corpus")
         model_options(fit)
@@ -145,6 +161,7 @@ def parser_for_cli(backend="jacobian"):
         apply.add_argument("--all-positions", action="store_true", help="Alias for --positions all")
         apply.add_argument("--top-k", type=positive, default=10)
         apply.add_argument("--max-seq-len", type=positive, default=512)
+        apply.add_argument("--truncation", choices=["error", "left", "right"], default="error")
         apply.add_argument(
             "--track-token-id",
             type=nonnegative,
@@ -200,12 +217,15 @@ def parser_for_cli(backend="jacobian"):
 
 
 def schema(backend="jacobian") -> dict:
+    from .tools import capabilities
+
     return {
         "cli_version": __version__,
         "upstream_commit": UPSTREAM_COMMIT,
         "backend": backend,
         "commands": (["download"] if backend == "jpp" else ["fit", "merge"])
-        + ["apply", "visualize", "inspect", "presets", "doctor", "schema"],
+        + ["apply", "visualize", "inspect", "presets", "doctor", "schema", "tool", "serve"],
+        "tools": capabilities(backend),
         "success": {
             "schema_version": SCHEMA_VERSION,
             "status": "ok",
@@ -244,7 +264,7 @@ def schema(backend="jacobian") -> dict:
 
 def resolve(args, backend):
     args.backend = backend
-    if args.command in ("presets", "schema", "doctor", "merge"):
+    if args.command in ("presets", "schema", "doctor", "merge", "tool", "serve"):
         return
     from . import jpp, legacy
 
@@ -282,6 +302,7 @@ def resolve(args, backend):
 
 
 def validate_args(args):
+    protect_paths(args)
     if args.command in ("apply", "visualize"):
         if args.baseline and args.logit_lens:
             raise CLIError("Use either --baseline or --logit-lens.")
@@ -362,6 +383,10 @@ def main(argv=None, *, backend="jacobian") -> int:
         args = parser_for_cli(backend).parse_args(argv)
         resolve(args, backend)
         validate_args(args)
+        if args.command in ("tool", "serve"):
+            from .tools import run_cli
+
+            return run_cli(args)
         ensure_output(getattr(args, "output", None), force=getattr(args, "force", False))
         logging.basicConfig(
             level=logging.DEBUG if args.verbose else logging.INFO,

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from jlens_cli import UPSTREAM_COMMIT, __version__
+from jlens_cli.artifacts import check_lineage, complete_lineage, weights_identity
 from jlens_cli.io import (
     CLIError,
     atomic_lens,
@@ -21,6 +22,8 @@ from jlens_cli.runtime import dependencies, lens_info, load_lens, load_model, va
 
 
 def model_identity(args, model) -> dict:
+    if not hasattr(model, "_cli_identity"):
+        model._cli_identity = weights_identity(args, model)
     return {
         "model": args.model,
         "revision": args.revision,
@@ -32,6 +35,7 @@ def model_identity(args, model) -> dict:
         "d_model": model.d_model,
         "force_bos": not args.no_force_bos,
         "attn_implementation": args.attn_implementation,
+        "artifact_identity": model._cli_identity,
     }
 
 
@@ -149,6 +153,16 @@ def rows(
     _, ids = ranking.topk(min(top_k, count), dim=-1)
     values = logits.gather(-1, ids)
     top_probs = log_probs.gather(-1, ids).exp().tolist()
+    # Many concept probes share the same vocabulary. Sort once instead of
+    # scanning the vocabulary separately for every tracked token.
+    full_ranks = filtered_ranks = None
+    if len(tracked_ids) >= 8:
+        ordered = logits.sort(dim=-1, descending=True).values
+        probes = logits[:, tracked_ids].contiguous()
+        full_ranks = (torch.searchsorted(-ordered, -probes) + 1).tolist()
+        if mask is not None:
+            eligible = logits[:, mask].sort(dim=-1, descending=True).values
+            filtered_ranks = (torch.searchsorted(-eligible, -probes) + 1).tolist()
     results = []
     for index, position in enumerate(positions):
         top = [
@@ -166,16 +180,23 @@ def rows(
             {
                 "token_id": token_id,
                 "token": tokenizer.decode([token_id]),
-                "rank": int((logits[index] > logits[index, token_id]).sum().item()) + 1,
+                "rank": full_ranks[index][offset]
+                if full_ranks is not None
+                else int((logits[index] > logits[index, token_id]).sum().item()) + 1,
                 "logit": logits[index, token_id].item(),
                 "filtered_rank": (
-                    int(((logits[index] > logits[index, token_id]) & mask).sum().item()) + 1
+                    (
+                        filtered_ranks[index][offset]
+                        if filtered_ranks is not None
+                        else int(((logits[index] > logits[index, token_id]) & mask).sum().item())
+                        + 1
+                    )
                     if mask is not None and mask[token_id].item()
                     else None
                 ),
                 "probability": log_probs[index, token_id].exp().item(),
             }
-            for token_id in tracked_ids
+            for offset, token_id in enumerate(tracked_ids)
         ]
         results.append(
             {
@@ -198,8 +219,11 @@ def apply(args) -> dict:
     config = None
     if backend == "jpp":
         from . import jpp
+        from .artifacts import protect_paths
 
-        lens, config = jpp.load_checkpoint(jpp.lens_path(args))
+        args.resolved_lens_path = str(jpp.lens_path(args))
+        protect_paths(args, [args.resolved_lens_path])
+        lens, config = jpp.load_checkpoint(args.resolved_lens_path)
         args.model = args.model or config["hf_model_name"]
         model = load_model(args)
         try:
@@ -212,30 +236,50 @@ def apply(args) -> dict:
         lens, metadata = load_lens(args, model)
     layers = indices(args.layers, model.n_layers, default=lens.source_layers)
     unknown = set(layers) - set(lens.source_layers)
-    if unknown:
+    if unknown and not args.logit_lens:
         raise CLIError(
             f"Layers {sorted(unknown)} were not fitted; fitted layers: {lens.source_layers}."
         )
     # Transfer once per batch; preserve the legacy J++ benchmark path separately.
-    for layer in layers:
+    for layer in layers if not args.logit_lens else []:
         lens.jacobians[layer] = lens.jacobians[layer].to(model.input_device)
     results = []
     mask = None
     for record in records:
         prompt = record["text"]
-        ids = model.encode(prompt, max_length=args.max_seq_len)[0].tolist()
+        from .inputs import prepare
+
+        prepared = prepare(
+            model,
+            {
+                "text": prompt,
+                "positions": args.positions,
+                "truncation": getattr(args, "truncation", "error"),
+            },
+            max_tokens=args.max_seq_len,
+        )
+        ids = prepared["input_ids"]
         if not ids:
             raise CLIError(f"Prompt {record['id']!r} encodes to an empty sequence.")
         positions = indices(args.positions, len(ids))
-        logits, model_logits, input_ids = lens.apply(
-            model,
-            prompt,
-            layers=layers,
-            positions=positions,
-            max_seq_len=args.max_seq_len,
-            use_jacobian=not args.logit_lens,
-        )
-        if input_ids[0].tolist() != ids:
+        # Explicitly trim before upstream's text-only API; reject long inputs by default.
+        if prepared["truncated"]:
+            from .session import forward_readouts
+
+            logits, model_logits = forward_readouts(
+                model, lens, prepared, layers, use_jacobian=not args.logit_lens
+            )
+            input_ids = None
+        else:
+            logits, model_logits, input_ids = lens.apply(
+                model,
+                prompt,
+                layers=layers,
+                positions=positions,
+                max_seq_len=args.max_seq_len,
+                use_jacobian=not args.logit_lens,
+            )
+        if input_ids is not None and input_ids[0].tolist() != ids:
             raise CLIError(
                 "Tokenizer produced inconsistent encodings.", code="runtime_error", exit_code=1
             )
@@ -258,14 +302,9 @@ def apply(args) -> dict:
             for layer in layers
         ]
         if args.baseline and not args.logit_lens:
-            baseline, _, _ = lens.apply(
-                model,
-                prompt,
-                layers=layers,
-                positions=positions,
-                max_seq_len=args.max_seq_len,
-                use_jacobian=False,
-            )
+            from .session import forward_readouts
+
+            baseline, _ = forward_readouts(model, lens, prepared, layers, use_jacobian=False)
             readouts.extend(
                 {
                     "kind": "logit",
@@ -295,6 +334,10 @@ def apply(args) -> dict:
                 "id": record["id"],
                 "prompt": prompt,
                 "num_tokens": len(ids),
+                "input_hash": prepared["input_hash"],
+                "original_num_tokens": prepared["original_num_tokens"],
+                "truncated": prepared["truncated"],
+                "position_offset": prepared["position_offset"],
                 "tokens": [
                     {
                         "position": i,
@@ -328,6 +371,9 @@ def jpp_artifact(args):
     from . import jpp
 
     path = jpp.lens_path(args)
+    from .artifacts import protect_paths
+
+    protect_paths(args, [path])
     if args.command == "download":
         result = {
             "lens_path": str(path),
@@ -395,7 +441,7 @@ def merge(args) -> dict:
             "Cannot merge lenses with different model identities/revisions.",
             code="incompatible_lens",
         )
-    configurations = [item.get("fit") for item in metadata if item and item.get("fit")]
+    configurations = check_lineage(metadata)
     comparable = [
         {k: v for k, v in item.items() if k not in ("prompts_sha256", "shard_index", "num_shards")}
         for item in configurations
@@ -423,7 +469,10 @@ def merge(args) -> dict:
         "input_metadata": metadata,
         "input_prompt_counts": [item.n_prompts for item in lenses],
         "save_dtype": args.save_dtype,
-        "provenance_complete": all_identified,
+        "provenance_complete": all_identified and all(complete_lineage(m) for m in metadata),
+        "artifact_identity": configurations[0].get("artifact_identity")
+        if configurations and all_identified
+        else None,
     }
     write_json(f"{args.output}.meta.json", result)
     return result

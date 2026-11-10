@@ -1,5 +1,12 @@
 # jlens-cli
 
+**0.3 新增 RSI 工具层**：`jlens serve --config SESSION.json` 常驻处理 JSONL；
+`jlens tool --config SESSION.json --request REQUEST.json` 使用同一协议单次调用。
+J-lens/J++ 共用原始 token 输入、概念轨迹、失败集减背景集的组件评分、canary 体检、
+checkpoint 对比和受预算约束的 LoRA 试训候选。完整说明见
+[RSI 封装、接口与资源策略](docs/rsi-tools.md)。训练、留出集门禁和晋升由外环执行。
+现代命令对超长输入默认报错；明确选择窗口时使用 `--truncation left|right`。
+
 将 [Anthropic Jacobian Lens](https://github.com/anthropics/jacobian-lens) 封装为可供人和 AI Agent 调用的命令行工具。提供 lens 拟合、内部表征读取、logit lens 对照、分片合并、JSON/JSONL 输出与交互式 HTML 报告。
 
 这是独立封装，非 Anthropic 官方产品。数值计算直接使用官方 `jlens`，上游固定至 `581d398613e5602a5af361e1c34d3a92ea82ba8e`，不重新实现 Jacobian 算法。

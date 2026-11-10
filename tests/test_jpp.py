@@ -291,3 +291,59 @@ def test_unified_artifacts_and_legacy(checkpoint, tiny_model, tmp_path, capsys):
     capsys.readouterr()
     assert jpp.main(["fit"]) == 2
     assert json.loads(capsys.readouterr().err.splitlines()[-1])["error"]["code"] == "usage_error"
+
+
+def test_resident_jpp_tool_matches_reader(checkpoint, tiny_model):  # noqa: F811
+    from jlens_cli.tools import LensTool
+
+    tool = LensTool(
+        {
+            "backend": "jpp",
+            "model": str(tiny_model),
+            "lens": str(checkpoint),
+            "device": "cpu",
+            "dtype": "float32",
+            "local_files_only": True,
+            "max_tokens": 32,
+        }
+    )
+    assert tool.handle({"id": 0, "method": "capabilities"})["data"]["backend"] == "jpp"
+    reply = tool.handle(
+        {
+            "id": 1,
+            "method": "readout",
+            "params": {
+                "samples": [{"text": "the cat sat ."}],
+                "baseline": True,
+                "top_k": 10,
+                "track_token_ids": [3, 9],
+            },
+        }
+    )
+    assert reply["status"] == "ok", reply
+    data = reply["data"]
+    assert data["metrics"]["forward_calls"] == 1
+    assert [row["kind"] for row in data["results"][0]["readouts"]] == ["jpp", "logit", "model"]
+    cell = data["results"][0]["readouts"][0]["positions"][0]
+    assert len(cell["top_tokens"]) == 9
+    assert cell["tracked_tokens"][1]["filtered_rank"] is None
+    args = jpp.parser().parse_args(
+        [
+            "apply",
+            "--model",
+            str(tiny_model),
+            "--lens",
+            str(checkpoint),
+            "--prompt",
+            "the cat sat .",
+            "--top-k",
+            "10",
+        ]
+    )
+    jpp.resolve(args)
+    expected = jpp.infer(
+        args, tool.session.model, tool.session.lens, tool.session.metadata, args.prompt
+    )
+    for actual, reference in zip(cell["top_tokens"], expected["layers"]["0"][0], strict=True):
+        assert actual["token_id"] == reference["token_id"]
+        assert actual["probability"] == pytest.approx(reference["probability"])

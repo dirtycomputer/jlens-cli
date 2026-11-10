@@ -1,0 +1,13 @@
+{
+  "id": "diagnose-1",
+  "method": "readout",
+  "params": {
+    "samples": [
+      {"id": "case-1", "text": "Fact: In humans, the organ that pumps blood through the body is", "positions": "-1"}
+    ],
+    "layers": [4, 8, 12, 16, 20, 24, 28],
+    "top_k": 10,
+    "concepts": {"need": ["heart", " heart"], "risk": ["reward", " trick"]},
+    "baseline": true
+  }
+}
